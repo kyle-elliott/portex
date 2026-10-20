@@ -56,11 +56,20 @@ jobs:
       - name: Clippy (no_std + alloc, all targets)
         run: cargo clippy --no-default-features --all-targets --target ${{ matrix.target }} -- -D warnings
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Test (all features)
-        run: cargo test --all-features --target ${{ matrix.target }}
+        run: cargo nextest run --all-features --target ${{ matrix.target }}
 
       - name: Test (no_std + alloc)
-        run: cargo test --no-default-features --target ${{ matrix.target }}
+        run: cargo nextest run --no-default-features --target ${{ matrix.target }}
+
+      - name: Doctests (all features)
+        run: cargo test --doc --all-features --target ${{ matrix.target }}
+
+      - name: Doctests (no_std + alloc)
+        run: cargo test --doc --no-default-features --target ${{ matrix.target }}
 
       - name: Documentation (all features)
         if: matrix.target == 'x86_64-pc-windows-msvc'
@@ -99,11 +108,20 @@ jobs:
       - name: Check (no_std + alloc, all targets)
         run: cargo +1.88.0 check --no-default-features --all-targets
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Test (all features)
-        run: cargo +1.88.0 test --all-features
+        run: cargo +1.88.0 nextest run --all-features
 
       - name: Test (no_std + alloc)
-        run: cargo +1.88.0 test --no-default-features
+        run: cargo +1.88.0 nextest run --no-default-features
+
+      - name: Doctests (all features)
+        run: cargo +1.88.0 test --doc --all-features
+
+      - name: Doctests (no_std + alloc)
+        run: cargo +1.88.0 test --doc --no-default-features
 
       - name: Documentation (all features)
         run: cargo +1.88.0 doc --no-deps --all-features
