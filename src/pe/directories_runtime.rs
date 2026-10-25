@@ -429,24 +429,41 @@ impl PeImage {
     }
 
     /// Parse the load config directory.
+    ///
+    /// The Windows loader reads the structure through its own `Size` field,
+    /// not through the size of the data directory. Linkers for 32-bit images
+    /// write a directory size of 0x40 for the loader of Windows XP, and a
+    /// larger `Size` for the fields that later versions read. This reader
+    /// therefore reads `Size` bytes at the directory address. A zero `Size`
+    /// keeps the directory size. A structure that the mapped image cannot hold
+    /// is an error.
     pub fn load_config(&self) -> Result<Option<crate::loadconfig::LoadConfigDirectory>> {
         use crate::data_dir::DataDirectoryType;
 
-        let dir = self
+        let Some(directory) = self
             .data_directory(DataDirectoryType::LoadConfig)
-            .filter(|d| d.is_present());
-        match dir {
-            Some(d) => {
-                let data = self
-                    .read_rva(d.virtual_address, d.size as usize)
-                    .ok_or(crate::Error::invalid_rva(d.virtual_address))?;
-                Ok(Some(crate::loadconfig::LoadConfigDirectory::parse(
-                    &data,
-                    self.is_64bit(),
-                )?))
-            }
-            None => Ok(None),
-        }
+            .filter(|d| d.is_present())
+        else {
+            return Ok(None);
+        };
+        let invalid = || crate::Error::invalid_rva(directory.virtual_address);
+        let header = self
+            .read_rva(directory.virtual_address, core::mem::size_of::<u32>())
+            .ok_or_else(invalid)?;
+        let size = u32::from_le_bytes(
+            header
+                .as_slice()
+                .try_into()
+                .expect("the read has the width of the Size field"),
+        );
+        let length = if size == 0 { directory.size } else { size };
+        let data = self
+            .read_rva(directory.virtual_address, length as usize)
+            .ok_or_else(invalid)?;
+        Ok(Some(crate::loadconfig::LoadConfigDirectory::parse(
+            &data,
+            self.is_64bit(),
+        )?))
     }
 
     /// Update the load config directory.

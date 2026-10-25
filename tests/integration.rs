@@ -3,12 +3,13 @@
 //! These tests perform roundtrip operations: create/parse → modify → rebuild → re-parse.
 
 use portex::{
-    ExceptionDirectory, ExportTable, ImportTable, ImportThunk, MachineType, PeBuilder, PeImage,
-    RelocationTable, RelocationType, Subsystem,
+    data_dir::DataDirectoryType,
     debug::CodeViewRsds,
-    loadconfig::{LoadConfigDirectory, LoadConfigDirectory64},
+    loadconfig::{LoadConfigDirectory, LoadConfigDirectory32, LoadConfigDirectory64},
     section::characteristics,
     tls::TlsInfo,
+    ExceptionDirectory, ExportTable, ImportTable, ImportThunk, MachineType, PeBuilder, PeImage,
+    RelocationTable, RelocationType, Subsystem,
 };
 
 /// Test that PeBuilder creates a valid PE that can be parsed back.
@@ -274,6 +275,44 @@ fn test_loadconfig_roundtrip() {
     // Verify LoadConfig is present
     let config = parsed.load_config().expect("Failed to get LoadConfig");
     assert!(config.is_some());
+}
+
+/// A 32-bit linker writes a directory size of 0x40 and a larger structure
+/// `Size`. The reader follows `Size`, as the Windows loader does, and still
+/// refuses a `Size` that the mapped image cannot hold.
+#[test]
+fn test_loadconfig_reads_the_structure_size_of_a_short_32bit_directory() {
+    let mut pe = PeBuilder::new()
+        .machine(MachineType::I386)
+        .subsystem(Subsystem::WindowsCui)
+        .entry_point(0x1000)
+        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
+        .add_section(".rdata", vec![0x00; 0x200], 0x40000040)
+        .build();
+    let config = LoadConfigDirectory32 {
+        size: 0xc0,
+        security_cookie: 0x0040_2000,
+        guard_cf_function_count: 3,
+        guard_flags: 0x0001_0500,
+        trailing_data: vec![0x5a; 0xc0 - LoadConfigDirectory32::SIZE_WITH_CFG],
+        ..Default::default()
+    };
+    let rva = pe
+        .update_load_config(&LoadConfigDirectory::Config32(config.clone()), None)
+        .expect("the load configuration is written");
+    pe.set_data_directory(DataDirectoryType::LoadConfig, rva, 0x40);
+
+    let parsed = PeImage::parse(&pe.build()).expect("the image parses");
+    assert_eq!(
+        parsed.load_config().expect("the structure is mapped"),
+        Some(LoadConfigDirectory::Config32(config))
+    );
+
+    let mut oversized = parsed.clone();
+    oversized
+        .write_at_rva(rva, &0x0010_0000_u32.to_le_bytes())
+        .expect("the Size field is mapped");
+    assert!(oversized.load_config().is_err());
 }
 
 /// Test section management.
