@@ -3,16 +3,17 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// ARM/ARM64 `.pdata` record (8 bytes).
+/// An ARM or ARM64 `.pdata` record of 8 bytes.
 ///
-/// The low two bits of `unwind_data` select packed versus unpacked unwind
-/// information. Keeping the complete word makes this type usable for both ARM
-/// encodings without losing architecture-specific packed fields.
+/// This type mirrors `IMAGE_ARM_RUNTIME_FUNCTION_ENTRY` and
+/// `IMAGE_ARM64_RUNTIME_FUNCTION_ENTRY`. The low two bits of `unwind_data` select packed or
+/// unpacked unwind information. The type keeps the complete word. Thus it supports both ARM
+/// encodings and does not lose the architecture-specific packed fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PackedRuntimeFunction {
     /// RVA of the first instruction in the function or fragment.
     pub begin_address: u32,
-    /// Architecture-specific packed unwind word or exception-data RVA + flags.
+    /// The architecture-specific packed unwind word, or the exception data RVA plus flags.
     pub unwind_data: u32,
 }
 
@@ -43,13 +44,13 @@ impl PackedRuntimeFunction {
         bytes
     }
 
-    /// Low-bit discriminator defined by the ARM exception ABI.
+    /// Return the low-bit discriminator that the ARM exception ABI defines.
     #[must_use]
     pub const fn flag(self) -> u8 {
         self.unwind_data.to_le_bytes()[0] & 0b11
     }
 
-    /// RVA of the external exception-data record when [`Self::flag`] is zero.
+    /// Return the RVA of the external exception data record if [`Self::flag`] is zero.
     #[must_use]
     pub const fn exception_data_rva(self) -> Option<u32> {
         if self.flag() == 0 {
@@ -59,14 +60,14 @@ impl PackedRuntimeFunction {
         }
     }
 
-    /// Whether the unwind description is encoded directly in this record.
+    /// Return `true` if this record encodes the unwind description directly.
     #[must_use]
     pub const fn is_packed(self) -> bool {
         self.flag() != 0
     }
 }
 
-/// ARM-family exception directory using fixed-width packed records.
+/// An ARM-family exception directory with fixed-width packed records.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PackedExceptionDirectory {
     /// Runtime-function records in table order.

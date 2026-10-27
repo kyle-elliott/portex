@@ -1,6 +1,6 @@
 //! Debug directory parsing and building.
 //!
-//! The debug directory contains debugging information such as PDB paths.
+//! The debug directory holds debug information, for example the path of the PDB file.
 //!
 //! # Examples
 //!
@@ -72,7 +72,7 @@ pub enum DebugType {
 }
 
 impl DebugType {
-    /// Map a raw `Type` value; unrecognized values become [`Self::Unknown`].
+    /// Map a raw `Type` value to a `DebugType`. An unrecognized value maps to [`Self::Unknown`].
     #[must_use]
     pub fn from_u32(value: u32) -> Self {
         match value {
@@ -98,24 +98,24 @@ impl DebugType {
     }
 }
 
-/// `IMAGE_DEBUG_DIRECTORY` - 28 bytes
+/// One entry of the debug directory (`IMAGE_DEBUG_DIRECTORY`, 28 bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DebugDirectory {
-    /// Reserved (must be zero).
+    /// Reserved. This value must be zero.
     pub characteristics: u32,
-    /// Time/date stamp.
+    /// The time and date stamp.
     pub time_date_stamp: u32,
-    /// Major version.
+    /// The major version number.
     pub major_version: u16,
-    /// Minor version.
+    /// The minor version number.
     pub minor_version: u16,
-    /// Debug type.
+    /// The raw debug type value. [`Self::get_type`] maps it to a [`DebugType`].
     pub debug_type: u32,
-    /// Size of debug data.
+    /// The size of the debug data in bytes.
     pub size_of_data: u32,
-    /// RVA of debug data (when loaded).
+    /// The RVA of the debug data when the image is loaded.
     pub address_of_raw_data: u32,
-    /// File offset of debug data.
+    /// The file offset of the debug data.
     pub pointer_to_raw_data: u32,
 }
 
@@ -161,7 +161,7 @@ impl DebugDirectory {
         buf
     }
 
-    /// Get the debug type as an enum.
+    /// Return the debug type as a [`DebugType`].
     #[must_use]
     pub fn get_type(&self) -> DebugType {
         DebugType::from_u32(self.debug_type)
@@ -174,19 +174,19 @@ pub const CV_SIGNATURE_RSDS: u32 = 0x5344_5352; // "RSDS"
 /// CodeView PDB 2.0 signature (NB10).
 pub const CV_SIGNATURE_NB10: u32 = 0x3031_424E; // "NB10"
 
-/// CodeView RSDS (PDB 7.0) debug info.
+/// A CodeView RSDS record (PDB 7.0, `CV_INFO_PDB70`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeViewRsds {
-    /// GUID (16 bytes).
+    /// The PDB GUID (16 bytes).
     pub guid: [u8; 16],
-    /// Age/revision.
+    /// The PDB age (revision number).
     pub age: u32,
-    /// Path to PDB file (null-terminated UTF-8).
+    /// The path of the PDB file. The record stores it as NUL-terminated UTF-8.
     pub pdb_path: String,
 }
 
 impl CodeViewRsds {
-    /// Minimum size: signature (4) + GUID (16) + age (4) + null terminator (1)
+    /// The minimum record size: signature (4) + GUID (16) + age (4) + NUL terminator (1).
     pub const MIN_SIZE: usize = 25;
 
     /// Parse an RSDS record.
@@ -214,7 +214,7 @@ impl CodeViewRsds {
         let guid = *guid;
         let age = u32::from_le_bytes(*age);
 
-        // Read null-terminated path
+        // Read the NUL-terminated path.
         let path = path_data
             .iter()
             .position(|&b| b == 0)
@@ -229,7 +229,7 @@ impl CodeViewRsds {
         })
     }
 
-    /// Serialize to bytes.
+    /// Serialize the record to bytes.
     ///
     /// # Panics
     /// Panics if [`Self::try_to_bytes`] fails.
@@ -239,7 +239,7 @@ impl CodeViewRsds {
             .expect("CodeView build failed: use try_to_bytes()")
     }
 
-    /// Serialize an RSDS record with checked length and string contents.
+    /// Serialize an RSDS record. Check the path contents and the record length.
     ///
     /// # Errors
     /// Returns an error if the PDB path contains a NUL byte or the record
@@ -265,7 +265,7 @@ impl CodeViewRsds {
         Ok(buf)
     }
 
-    /// Format GUID as a string (Microsoft format).
+    /// Format the GUID as a string in the Microsoft format.
     #[must_use]
     pub fn guid_string(&self) -> String {
         format!(
@@ -288,22 +288,26 @@ impl CodeViewRsds {
 /// Parsed debug information.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DebugInfo {
-    /// List of debug directories.
+    /// The entries of the debug directory.
     pub directories: Vec<DebugDirectory>,
-    /// CodeView info (if present).
+    /// The parsed CodeView RSDS record, if present.
     pub codeview: Option<CodeViewRsds>,
-    /// Raw payload for each directory entry, in the same order as
-    /// [`Self::directories`]. `None` means that entry had no readable payload.
+    /// The raw payload of each directory entry, in the same order as
+    /// [`Self::directories`]. `None` means that the entry has no readable payload.
     pub data: Vec<Option<Vec<u8>>>,
 }
 
 impl DebugInfo {
-    /// Parse debug information from a PE.
+    /// Parse the debug directory at RVA `debug_rva`.
+    ///
+    /// `debug_size` is the size of the directory in bytes. `read_at_rva` reads bytes at an RVA.
     ///
     /// # Errors
-    /// Returns an error if the directory size is not a multiple of 28, an
-    /// entry cannot be read or is invalid, a payload length mismatches, or a
-    /// CodeView RSDS record is malformed.
+    /// Returns an error if one of these conditions occurs:
+    /// - The directory size is not a multiple of 28.
+    /// - An entry cannot be read or is invalid.
+    /// - A payload length does not match.
+    /// - A CodeView RSDS record is malformed.
     pub fn parse<F>(debug_rva: u32, debug_size: u32, read_at_rva: F) -> Result<Self>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -322,11 +326,13 @@ impl DebugInfo {
         })
     }
 
-    /// Parse a raw-file debug directory, falling back to
-    /// `PointerToRawData` when an entry has no mapped RVA.
+    /// Parse the debug directory of a raw file at RVA `debug_rva`.
+    ///
+    /// If an entry has no mapped RVA, the function reads its payload at `PointerToRawData` (a
+    /// file offset) through `read_at_file_offset`.
     ///
     /// # Errors
-    /// Same conditions as [`Self::parse`].
+    /// Returns an error for the same conditions as [`Self::parse`].
     pub fn parse_with_file<F, G>(
         debug_rva: u32,
         debug_size: u32,
@@ -420,7 +426,7 @@ impl DebugInfo {
                 )));
             }
 
-            // Parse CodeView if present
+            // Parse the CodeView record, if present.
             if dir.get_type() == DebugType::CodeView
                 && let Some(cv_data) = payload.as_ref()
                 && let Some(signature) = cv_data.first_chunk::<4>()
@@ -440,17 +446,17 @@ impl DebugInfo {
         })
     }
 
-    /// Get the PDB path if available.
+    /// Return the PDB path, if available.
     #[must_use]
     pub fn pdb_path(&self) -> Option<&str> {
         self.codeview.as_ref().map(|cv| cv.pdb_path.as_str())
     }
 }
 
-/// Builder for debug directories.
+/// A builder for the debug directory.
 ///
-/// Debug directories can contain multiple entries (CodeView, POGO, Repro, etc.)
-/// but the most common is a single CodeView entry with PDB info.
+/// The debug directory can contain many entries, for example CodeView, POGO and Repro. The
+/// most common directory has one CodeView entry with PDB information.
 ///
 /// # Example
 ///
@@ -472,23 +478,23 @@ impl DebugInfo {
 /// ```
 #[derive(Debug, Clone)]
 pub struct DebugBuilder {
-    /// Base RVA where the debug section will be placed.
+    /// The RVA of the debug section.
     base_rva: u32,
 }
 
 impl DebugBuilder {
-    /// Create a new debug builder.
+    /// Create a debug builder. `base_rva` is the RVA of the debug section.
     #[must_use]
     pub fn new(base_rva: u32) -> Self {
         Self { base_rva }
     }
 
-    /// Build a CodeView-only debug directory.
+    /// Build a debug directory with one CodeView entry.
     ///
-    /// Returns (data, `directory_size`, `debug_directories`) where:
-    /// - `data` is the raw bytes to write to the section
-    /// - `directory_size` is the size of the debug directory entries (for data directory)
-    /// - `debug_directories` contains the parsed directories for inspection
+    /// Returns the tuple (`data`, `directory_size`, `debug_directories`):
+    /// - `data` contains the raw bytes to write to the section.
+    /// - `directory_size` is the size of the directory entries, for the data directory.
+    /// - `debug_directories` contains the directory entries for inspection.
     ///
     /// # Panics
     /// Panics if [`Self::try_build_codeview`] fails.
@@ -498,16 +504,16 @@ impl DebugBuilder {
             .expect("debug build failed: use try_build_codeview() for fallible serialization")
     }
 
-    /// Build a CodeView entry with checked string length and RVAs.
+    /// Build a CodeView entry. Check the string length and the RVAs.
     ///
     /// # Errors
-    /// Returns an error if the CodeView record cannot be serialized or the
-    /// payload RVA overflows.
+    /// Returns an error if the CodeView record cannot be serialized, or if the payload RVA
+    /// overflows.
     pub fn try_build_codeview(
         &self,
         codeview: &CodeViewRsds,
     ) -> Result<(Vec<u8>, u32, Vec<DebugDirectory>)> {
-        // Layout: [DebugDirectory (28 bytes)] [CodeView data]
+        // Layout: [DebugDirectory (28 bytes)] [CodeView data].
         let cv_data = codeview.try_to_bytes()?;
         let cv_offset = DebugDirectory::SIZE_U32;
         let payload_size = u32::try_from(cv_data.len())
@@ -536,9 +542,9 @@ impl DebugBuilder {
         Ok((data, dir_size, vec![dir]))
     }
 
-    /// Build from an existing `DebugInfo` structure.
+    /// Build the debug directory from a [`DebugInfo`].
     ///
-    /// This rebuilds all directories and every available raw payload.
+    /// This function rebuilds all entries and all available raw payloads.
     ///
     /// # Panics
     /// Panics if [`Self::try_build`] fails.
@@ -548,11 +554,13 @@ impl DebugBuilder {
             .expect("debug build failed: use try_build() for fallible serialization")
     }
 
-    /// Rebuild every debug entry and preserved payload with checked offsets.
+    /// Rebuild all debug entries and the preserved payloads. Check all offsets.
     ///
     /// # Errors
-    /// Returns an error if there are more payloads than directories, the
-    /// CodeView record cannot be serialized, or sizes/RVAs overflow `u32`.
+    /// Returns an error if one of these conditions occurs:
+    /// - There are more payloads than directory entries.
+    /// - The CodeView record cannot be serialized.
+    /// - A size or an RVA overflows `u32`.
     pub fn try_build(&self, debug_info: &DebugInfo) -> Result<(Vec<u8>, u32, Vec<DebugDirectory>)> {
         if debug_info.directories.is_empty() {
             return Ok((Vec::new(), 0, Vec::new()));
@@ -648,7 +656,7 @@ impl DebugBuilder {
         Ok((data, dir_size, dirs))
     }
 
-    /// Calculate the size needed for a CodeView debug entry.
+    /// Calculate the size of a CodeView debug entry.
     ///
     /// # Panics
     /// Panics if [`Self::try_calculate_codeview_size`] fails.
@@ -658,11 +666,10 @@ impl DebugBuilder {
             .expect("CodeView size overflow: use try_calculate_codeview_size()")
     }
 
-    /// Calculate a CodeView entry size with checked string validation.
+    /// Calculate the size of a CodeView debug entry. Validate the string.
     ///
     /// # Errors
-    /// Returns an error if the CodeView record cannot be serialized or the
-    /// size overflows.
+    /// Returns an error if the CodeView record cannot be serialized, or if the size overflows.
     pub fn try_calculate_codeview_size(codeview: &CodeViewRsds) -> Result<usize> {
         let payload = codeview.try_to_bytes()?;
         DebugDirectory::SIZE

@@ -5,12 +5,12 @@ use crate::{Error, Result};
 impl PeImage {
     /// Parse the bound import directory.
     ///
-    /// Bound imports are a legacy optimization for faster DLL loading.
+    /// Bound imports are a legacy optimization that makes DLL loading faster.
     /// Returns `Ok(None)` if the bound import data directory is absent.
     ///
     /// # Errors
     ///
-    /// Returns an error if the directory cannot be read at its RVA or its
+    /// Returns an error if the directory cannot be read at its RVA, or if its
     /// `IMAGE_BOUND_IMPORT_DESCRIPTOR` entries are malformed.
     pub fn bound_imports(&self) -> Result<Option<crate::bound_import::BoundImportDirectory>> {
         use crate::data_dir::DataDirectoryType;
@@ -31,18 +31,22 @@ impl PeImage {
         }
     }
 
-    /// Update bound imports: tries in-place replacement first, otherwise appends to target section.
+    /// Update the bound imports.
     ///
-    /// Bound imports are a legacy optimization that pre-resolves import addresses at link time.
-    /// Returns the RVA where the bound import data was written, or 0 if
-    /// `directory` has no descriptors and the directory was cleared.
+    /// The function first tries to replace the data in place. If the data does not fit, the
+    /// function appends it to the target section.
+    ///
+    /// Bound imports are a legacy optimization: the linker resolves the import addresses at link
+    /// time. Returns the RVA of the written bound import data. Returns 0 if `directory` has no
+    /// descriptors; then the function clears the data directory.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data-directory table has no bound import slot
-    /// and cannot be extended, if the descriptors cannot be serialized, if the
-    /// target section does not exist, or if appending the data breaks the image
-    /// layout.
+    /// Returns an error in these conditions:
+    /// - The data directory table has no bound import slot and cannot be extended.
+    /// - The descriptors cannot be serialized.
+    /// - The target section does not exist.
+    /// - The append breaks the image layout.
     pub fn update_bound_imports(
         &mut self,
         directory: &crate::bound_import::BoundImportDirectory,
@@ -59,7 +63,7 @@ impl PeImage {
         let (data, encoded_size) = crate::bound_import::BoundImportBuilder::try_build(directory)?;
         let required_size = data.len();
 
-        // Check if we can replace in-place
+        // Try to replace the data in place.
         let existing_dir = self.data_directory(DataDirectoryType::BoundImport).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
@@ -74,7 +78,7 @@ impl PeImage {
             return Ok(dir.virtual_address);
         }
 
-        // Find target section
+        // Find the target section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
@@ -110,23 +114,25 @@ impl PeImage {
 
     /// Parse the delay-load import directory.
     ///
-    /// Delay-loaded DLLs are loaded on first use, not at startup.
+    /// The loader loads a delay-loaded DLL on first use, not at startup.
     ///
     /// # Errors
     ///
-    /// Returns an error if the delay-load descriptors, their name tables, or
-    /// their strings cannot be read from the image or are malformed.
+    /// Returns an error if the delay-load descriptors, their name tables or
+    /// their strings cannot be read from the image, or if they are malformed.
     pub fn delay_imports(&self) -> Result<crate::delay_import::DelayImportDirectory> {
         self.delay_imports_at_image_base(self.runtime_image_base())
     }
 
-    /// Parse delay-load imports using an explicit base for legacy VA-based
-    /// descriptors. Modern descriptors use RVAs and are unaffected.
+    /// Parse the delay-load imports with an explicit image base.
+    ///
+    /// The function uses `runtime_image_base` for legacy descriptors that hold VAs. Modern
+    /// descriptors hold RVAs, and the image base has no effect on them.
     ///
     /// # Errors
     ///
-    /// Returns an error if the delay-load descriptors, their name tables, or
-    /// their strings cannot be read from the image or are malformed.
+    /// Returns an error if the delay-load descriptors, their name tables or
+    /// their strings cannot be read from the image, or if they are malformed.
     pub fn delay_imports_at_image_base(
         &self,
         runtime_image_base: u64,
@@ -155,18 +161,22 @@ impl PeImage {
         }
     }
 
-    /// Update delay imports: tries in-place replacement first, otherwise appends to target section.
+    /// Update the delay-load imports.
     ///
-    /// Delay-load imports allow DLLs to be loaded on first use rather than at startup.
-    /// Returns the RVA where the delay import data was written, or 0 if
-    /// `directory` has no DLLs and the directory was cleared.
+    /// The function first tries to replace the data in place. If the data does not fit, the
+    /// function appends it to the target section.
+    ///
+    /// With delay-load imports, the loader loads a DLL on first use and not at startup.
+    /// Returns the RVA of the written delay import data. Returns 0 if `directory` has no DLLs;
+    /// then the function clears the data directory.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data-directory table has no delay import slot
-    /// and cannot be extended, if the target section does not exist, if the
-    /// descriptors cannot be serialized, or if appending the data breaks the
-    /// image layout.
+    /// Returns an error in these conditions:
+    /// - The data directory table has no delay import slot and cannot be extended.
+    /// - The target section does not exist.
+    /// - The descriptors cannot be serialized.
+    /// - The append breaks the image layout.
     pub fn update_delay_imports(
         &mut self,
         directory: &crate::delay_import::DelayImportDirectory,
@@ -180,13 +190,13 @@ impl PeImage {
         }
         self.ensure_data_directory_slot(DataDirectoryType::DelayImport)?;
 
-        // Determine if 64-bit
+        // Find out if the image is 64-bit.
         let is_64bit = matches!(
             self.optional_header,
             crate::optional::OptionalHeader::Pe32Plus(_)
         );
 
-        // Find target section first to get the base RVA
+        // Find the target section first, to get the base RVA.
         let existing_dir = self.data_directory(DataDirectoryType::DelayImport).copied();
         let section_name: String = target_section
             .map(str::to_string)
@@ -215,19 +225,19 @@ impl PeImage {
             return Err(crate::Error::invalid_section(section_name));
         };
 
-        // Calculate the RVA where we'll place the data
+        // Calculate the RVA at which to put the data.
         let base_rva = self.prepare_section_append(section_idx)?;
 
         let builder = crate::delay_import::DelayImportBuilder::new(is_64bit, base_rva);
         let (data, encoded_size) = builder.try_build(&directory.dlls)?;
         let required_size = data.len();
 
-        // Check if we can replace in-place
+        // Try to replace the data in place.
         if let Some(ref dir) = existing_dir
             && dir.is_present()
             && dir.size as usize >= required_size
         {
-            // For in-place, we need to rebuild with the existing RVA
+            // For an in-place write, rebuild the data with the existing RVA.
             let existing_builder =
                 crate::delay_import::DelayImportBuilder::new(is_64bit, dir.virtual_address);
             let (existing_data, existing_size) = existing_builder.try_build(&directory.dlls)?;
@@ -244,7 +254,7 @@ impl PeImage {
             }
         }
 
-        // Append to section
+        // Append the data to the section.
         self.commit_section_append(section_idx, base_rva, &data)?;
         self.set_data_directory(DataDirectoryType::DelayImport, base_rva, encoded_size);
 
@@ -253,12 +263,12 @@ impl PeImage {
 
     /// Parse the resource directory (metadata only).
     ///
-    /// To also load the actual resource data, use `resources_with_data()`.
+    /// To also load the resource data, use `resources_with_data()`.
     ///
     /// # Errors
     ///
     /// Returns an error if the resource directory tree cannot be read from the
-    /// image or is malformed.
+    /// image, or if it is malformed.
     pub fn resources(&self) -> Result<crate::resource::ResourceDirectory> {
         use crate::data_dir::DataDirectoryType;
 
@@ -274,14 +284,15 @@ impl PeImage {
         }
     }
 
-    /// Parse the resource directory including resource data.
+    /// Parse the resource directory and the resource data.
     ///
-    /// This is slower than `resources()` but loads each resource's data into the `Resource::data` field.
+    /// This function is slower than `resources()`. It loads the data of each resource into the
+    /// `Resource::data` field.
     ///
     /// # Errors
     ///
-    /// Returns an error if the resource directory tree or any resource data
-    /// entry cannot be read from the image or is malformed.
+    /// Returns an error if the resource directory tree or a resource data
+    /// entry cannot be read from the image, or if it is malformed.
     pub fn resources_with_data(&self) -> Result<crate::resource::ResourceDirectory> {
         use crate::data_dir::DataDirectoryType;
 
@@ -301,17 +312,21 @@ impl PeImage {
         }
     }
 
-    /// Update relocations: tries in-place replacement first, otherwise appends to target section.
+    /// Update the base relocations.
     ///
-    /// Returns the RVA where the base relocation blocks were written, or 0 if
-    /// `relocs` has no blocks and the directory was cleared.
+    /// The function first tries to replace the data in place. If the data does not fit, the
+    /// function appends it to the target section.
+    ///
+    /// Returns the RVA of the written base relocation blocks. Returns 0 if `relocs` has no
+    /// blocks; then the function clears the data directory.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data-directory table has no base relocation
-    /// slot and cannot be extended, if the blocks cannot be serialized or
-    /// exceed `u32`, if the target section does not exist, or if appending the
-    /// data breaks the image layout.
+    /// Returns an error in these conditions:
+    /// - The data directory table has no base relocation slot and cannot be extended.
+    /// - The blocks cannot be serialized, or their size does not fit in `u32`.
+    /// - The target section does not exist.
+    /// - The append breaks the image layout.
     pub fn update_relocations(
         &mut self,
         relocs: &crate::reloc::RelocationTable,
@@ -330,7 +345,7 @@ impl PeImage {
         let encoded_size = u32::try_from(required_size)
             .map_err(|_| Error::invalid_data_directory("relocation table exceeds u32"))?;
 
-        // Check if we can replace in-place
+        // Try to replace the data in place.
         let existing_dir = self.data_directory(DataDirectoryType::BaseReloc).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
@@ -345,7 +360,7 @@ impl PeImage {
             return Ok(dir.virtual_address);
         }
 
-        // Find target section
+        // Find the target section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
@@ -381,18 +396,23 @@ impl PeImage {
         Ok(append_rva)
     }
 
-    /// Update resources: tries in-place replacement first, otherwise appends to target section.
+    /// Update the resources.
     ///
-    /// The directory must have been parsed with `resources_with_data()` so that
-    /// the resource data is available. Returns the RVA where the resource
-    /// directory was written, or 0 if it has no resources and was cleared.
+    /// The function first tries to replace the data in place. If the data does not fit, the
+    /// function appends it to the target section.
+    ///
+    /// Parse `directory` with `resources_with_data()`, so that the resource data is available.
+    /// Returns the RVA of the written resource directory. Returns 0 if `directory` has no
+    /// resources; then the function clears the data directory.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data-directory table has no resource slot and
-    /// cannot be extended, if resource data was not loaded, if the tree cannot
-    /// be serialized, if the target section does not exist, or if appending
-    /// the data breaks the image layout.
+    /// Returns an error in these conditions:
+    /// - The data directory table has no resource slot and cannot be extended.
+    /// - The resource data is not loaded.
+    /// - The tree cannot be serialized.
+    /// - The target section does not exist.
+    /// - The append breaks the image layout.
     pub fn update_resources(
         &mut self,
         directory: &crate::resource::ResourceDirectory,
@@ -413,7 +433,7 @@ impl PeImage {
 
         let required_size = builder.try_calculate_size()?;
 
-        // Check if we can replace in-place
+        // Try to replace the data in place.
         let existing_dir = self.data_directory(DataDirectoryType::Resource).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
@@ -426,7 +446,7 @@ impl PeImage {
             }
         }
 
-        // Find target section
+        // Find the target section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
@@ -463,19 +483,22 @@ impl PeImage {
         Ok(append_rva)
     }
 
-    /// Update resources from a builder: for creating new resources from scratch.
+    /// Update the resources from a builder.
     ///
-    /// Use this when building new resources rather than modifying existing ones.
-    /// For modifying existing resources, use `update_resources()` with a parsed `ResourceDirectory`.
-    /// Returns the RVA where the resource directory was written, or 0 if the
-    /// builder is empty and the directory was cleared.
+    /// Use this function to make new resources. To change existing resources, use
+    /// `update_resources()` with a parsed `ResourceDirectory`.
+    ///
+    /// The function first tries to replace the data in place. If the data does not fit, the
+    /// function appends it to the target section. Returns the RVA of the written resource
+    /// directory. Returns 0 if the builder is empty; then the function clears the data directory.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data-directory table has no resource slot and
-    /// cannot be extended, if the tree cannot be serialized, if the target
-    /// section does not exist, or if appending the data breaks the image
-    /// layout.
+    /// Returns an error in these conditions:
+    /// - The data directory table has no resource slot and cannot be extended.
+    /// - The tree cannot be serialized.
+    /// - The target section does not exist.
+    /// - The append breaks the image layout.
     pub fn update_resources_from_builder(
         &mut self,
         builder: &crate::resource::ResourceBuilder,
@@ -490,7 +513,7 @@ impl PeImage {
         }
         self.ensure_data_directory_slot(DataDirectoryType::Resource)?;
 
-        // Check if we can replace in-place
+        // Try to replace the data in place.
         let existing_dir = self.data_directory(DataDirectoryType::Resource).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
@@ -503,7 +526,7 @@ impl PeImage {
             }
         }
 
-        // Find target section
+        // Find the target section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {

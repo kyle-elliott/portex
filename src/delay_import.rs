@@ -1,7 +1,8 @@
 //! Delay-load import directory parsing.
 //!
-//! Delay-load imports are loaded on first use rather than at program startup.
-//! This is useful for optional dependencies or improving startup time.
+//! The loader loads a delay-load import when the program first uses it, not at
+//! program startup. Use delay-load imports for optional dependencies or to make
+//! startup faster.
 //!
 //! # Examples
 //!
@@ -29,25 +30,28 @@ const IMAGE_ORDINAL_FLAG32: u32 = 0x8000_0000;
 /// `IMAGE_ORDINAL_FLAG64`: high bit of a PE32+ thunk marks an import by ordinal.
 const IMAGE_ORDINAL_FLAG64: u64 = 0x8000_0000_0000_0000;
 
-/// `IMAGE_DELAYLOAD_DESCRIPTOR` structure.
+/// Delay-load descriptor (`IMAGE_DELAYLOAD_DESCRIPTOR`).
+///
+/// The address fields are RVAs in the modern format. In the legacy format
+/// ([`Self::uses_rvas`] returns `false`), they are VAs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct DelayLoadDescriptor {
-    /// Attributes (must be 0 for current version).
+    /// Attributes. Bit 0 set means that the address fields are RVAs.
     pub attributes: u32,
-    /// RVA of the DLL name.
+    /// Address of the DLL name.
     pub dll_name_rva: u32,
-    /// RVA of the module handle.
+    /// Address of the module handle.
     pub module_handle_rva: u32,
-    /// RVA of the delay-load import address table.
+    /// Address of the delay-load import address table (IAT).
     pub import_address_table_rva: u32,
-    /// RVA of the delay-load import name table.
+    /// Address of the delay-load import name table (INT).
     pub import_name_table_rva: u32,
-    /// RVA of the bound delay-load import address table.
+    /// Address of the bound delay-load import address table.
     pub bound_import_address_table_rva: u32,
-    /// RVA of the unload delay-load import address table.
+    /// Address of the unload delay-load import address table.
     pub unload_information_table_rva: u32,
-    /// Timestamp of the bound DLL (0 if not bound).
+    /// Time stamp of the bound DLL. The value is 0 if the DLL is not bound.
     pub time_date_stamp: u32,
 }
 
@@ -57,7 +61,7 @@ impl DelayLoadDescriptor {
     /// [`Self::SIZE`] as a `u32`, for RVA arithmetic.
     const SIZE_U32: u32 = 32;
 
-    /// Parse from raw bytes. Returns `None` if this is the null terminator.
+    /// Parse a descriptor from raw bytes. Return `None` if the descriptor is the null terminator.
     ///
     /// # Errors
     ///
@@ -82,8 +86,8 @@ impl DelayLoadDescriptor {
             time_date_stamp,
         ] = fields;
 
-        // The terminator is an entirely zero descriptor. A partially-zero
-        // descriptor is malformed data, not an early end marker.
+        // The terminator is a descriptor with all fields zero. A descriptor with only
+        // some zero fields is malformed data. It is not an early end marker.
         if attributes == 0
             && dll_name_rva == 0
             && module_handle_rva == 0
@@ -108,7 +112,7 @@ impl DelayLoadDescriptor {
         }))
     }
 
-    /// Whether descriptor pointer fields are RVAs (the modern format).
+    /// Return `true` if the descriptor address fields are RVAs (the modern format).
     #[must_use]
     pub fn uses_rvas(&self) -> bool {
         self.attributes & 1 != 0
@@ -134,14 +138,14 @@ impl DelayLoadDescriptor {
     }
 }
 
-/// A delay-load import entry (function to import).
+/// A delay-load import entry (a function to import).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DelayImportThunk {
     /// Import by ordinal.
     Ordinal(u16),
-    /// Import by name with optional hint.
+    /// Import by name, with a hint.
     Name {
-        /// Hint (index into export name table).
+        /// Hint (an index into the export name pointer table).
         hint: u16,
         /// Function name.
         name: String,
@@ -155,14 +159,14 @@ pub struct DelayLoadedDll {
     pub descriptor: DelayLoadDescriptor,
     /// Resolved DLL name.
     pub name: String,
-    /// List of imported functions.
+    /// Imported functions.
     pub imports: Vec<DelayImportThunk>,
 }
 
 /// Delay-load import directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DelayImportDirectory {
-    /// List of delay-loaded DLLs.
+    /// Delay-loaded DLLs.
     pub dlls: Vec<DelayLoadedDll>,
 }
 
@@ -170,17 +174,20 @@ impl DelayImportDirectory {
     /// Parse the delay import directory.
     ///
     /// # Arguments
-    /// * `rva` - RVA of the delay import directory
-    /// * `is_64bit` - Whether this is a 64-bit PE
-    /// * `read_fn` - Function to read data at an RVA
+    /// * `rva` - RVA of the delay import directory.
+    /// * `is_64bit` - `true` for a PE32+ image.
+    /// * `read_fn` - Function that reads data at an RVA.
     ///
     /// # Errors
     ///
-    /// Returns an error if a descriptor, thunk, or name cannot be read, a
-    /// descriptor has reserved attribute bits or no DLL name, an ordinal
-    /// thunk has reserved bits set, a named thunk has a null hint/name RVA,
-    /// an RVA computation overflows, or the descriptor or thunk table lacks a
-    /// null terminator.
+    /// Returns an error if one of these conditions occurs:
+    ///
+    /// - A descriptor, a thunk or a name cannot be read.
+    /// - A descriptor has reserved attribute bits set or has no DLL name.
+    /// - An ordinal thunk has reserved bits set.
+    /// - A named thunk has a null hint/name RVA.
+    /// - An RVA computation overflows.
+    /// - The descriptor table or a thunk table has no null terminator.
     pub fn parse<F>(rva: u32, is_64bit: bool, read_fn: F) -> Result<Self>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -188,13 +195,13 @@ impl DelayImportDirectory {
         Self::parse_bounded(rva, None, 0, is_64bit, read_fn)
     }
 
-    /// Parse delay imports, converting legacy VA-based descriptors with an
-    /// explicit preferred or runtime image base.
+    /// Parse delay imports. Convert legacy descriptors, which use VAs, to RVAs with
+    /// `image_base`. `image_base` is the preferred or the runtime image base.
     ///
     /// # Errors
     ///
-    /// Same conditions as [`Self::parse`], with legacy VAs checked against
-    /// `image_base`.
+    /// Returns the errors of [`Self::parse`]. Also returns an error if a nonzero legacy
+    /// VA is less than `image_base`.
     pub fn parse_with_image_base<F>(
         rva: u32,
         image_base: u64,
@@ -207,14 +214,14 @@ impl DelayImportDirectory {
         Self::parse_bounded(rva, None, image_base, is_64bit, read_fn)
     }
 
-    /// Parse delay imports while bounding descriptor reads to the declared
-    /// data-directory size.
+    /// Parse delay imports, and do not read descriptors past the data directory
+    /// size `size`.
     ///
     /// # Errors
     ///
-    /// Same conditions as [`Self::parse_with_image_base`]; additionally fails if
-    /// `size` is smaller than one descriptor or the descriptor table has no
-    /// terminator within `size` bytes.
+    /// Returns the errors of [`Self::parse_with_image_base`]. Also returns an
+    /// error if `size` is smaller than one descriptor, or if the descriptor table
+    /// has no terminator in the first `size` bytes.
     pub fn parse_sized_with_image_base<F>(
         rva: u32,
         size: u32,
@@ -294,7 +301,7 @@ impl DelayImportDirectory {
                         ));
                     }
 
-                    // Resolve DLL name
+                    // Read the DLL name.
                     let name = if desc.dll_name_rva != 0 {
                         crate::parse_utils::read_c_string(
                             &read_fn,
@@ -306,7 +313,7 @@ impl DelayImportDirectory {
                         String::new()
                     };
 
-                    // Parse thunks from INT (Import Name Table)
+                    // Parse the thunks from the INT (Import Name Table).
                     let imports = Self::parse_thunks(
                         desc.import_name_table_rva,
                         is_64bit,
@@ -379,12 +386,12 @@ impl DelayImportDirectory {
                 u64::from(u32::from_le_bytes(*bytes))
             };
 
-            // Null terminator
+            // Null terminator.
             if thunk_value == 0 {
                 return Ok(imports);
             }
 
-            // Check if import by ordinal
+            // Check for an import by ordinal.
             if thunk_value & ordinal_flag != 0 {
                 let reserved_mask = if is_64bit {
                     0x7fff_ffff_ffff_0000
@@ -399,7 +406,7 @@ impl DelayImportDirectory {
                 let [low, high, ..] = thunk_value.to_le_bytes();
                 imports.push(DelayImportThunk::Ordinal(u16::from_le_bytes([low, high])));
             } else {
-                // Import by name - thunk_value is RVA to hint/name
+                // Import by name: `thunk_value` is the RVA of the hint/name entry.
                 let hint_name_rva = u32::try_from(thunk_value).map_err(|_| {
                     Error::invalid_data_directory(
                         "delay-import hint/name address does not fit an RVA",
@@ -459,12 +466,12 @@ fn va_field_to_rva(value: u32, image_base: u64) -> Result<u32> {
         })
 }
 
-/// Builder for serializing delay-load import tables.
+/// Builder that serializes delay-load import tables.
 #[derive(Debug)]
 pub struct DelayImportBuilder {
-    /// Whether to build for 64-bit PE.
+    /// If `true`, build for PE32+. If `false`, build for PE32.
     pub is_64bit: bool,
-    /// Base RVA where the delay import section will be placed.
+    /// RVA of the start of the built delay import data.
     pub base_rva: u32,
 }
 
@@ -475,7 +482,7 @@ impl DelayImportBuilder {
         Self { is_64bit, base_rva }
     }
 
-    /// Calculate the total size needed for the delay import data.
+    /// Calculate the total size of the delay import data.
     ///
     /// # Panics
     ///
@@ -486,12 +493,14 @@ impl DelayImportBuilder {
             .expect("delay-import size overflow: use try_calculate_size()")
     }
 
-    /// Calculate size with checked descriptor, thunk, handle, and name counts.
+    /// Calculate the size. Use checked arithmetic for the descriptor, thunk,
+    /// handle and name counts.
     ///
     /// # Errors
     ///
-    /// Returns an invalid-data-directory error if a DLL or function name is
-    /// empty or contains NUL, or if any size computation overflows `usize`.
+    /// Returns an invalid-data-directory error if a DLL name or a function name
+    /// is empty or contains NUL. Also returns this error if a size computation
+    /// overflows `usize`.
     pub fn try_calculate_size(&self, dlls: &[DelayLoadedDll]) -> Result<usize> {
         if dlls.is_empty() {
             return Ok(0);
@@ -504,7 +513,7 @@ impl DelayImportBuilder {
     fn layout(&self, dlls: &[DelayLoadedDll]) -> Result<DelayImportLayout> {
         let thunk_size = self.thunk_size();
 
-        // Descriptors (one per DLL + null terminator)
+        // Descriptors: one for each DLL, plus a null terminator.
         let descriptors_size = dlls
             .len()
             .checked_add(1)
@@ -513,7 +522,7 @@ impl DelayImportBuilder {
                 Error::invalid_data_directory("delay-import descriptor size overflow")
             })?;
 
-        // IAT and INT (both same size: thunks per DLL + null terminator each)
+        // IAT and INT. Each has the thunks of each DLL plus a null terminator for each DLL.
         let mut thunks_count = 0usize;
         for dll in dlls {
             if dll.name.is_empty() || dll.name.as_bytes().contains(&0) {
@@ -534,13 +543,13 @@ impl DelayImportBuilder {
             Error::invalid_data_directory("delay-import thunk table size overflow")
         })?;
 
-        // Module handles (one HMODULE pointer per DLL)
+        // Module handles: one `HMODULE` pointer for each DLL.
         let handles_size = dlls
             .len()
             .checked_mul(thunk_size)
             .ok_or_else(|| Error::invalid_data_directory("delay-import handle size overflow"))?;
 
-        // Hint/Name entries
+        // Hint/name entries.
         let mut hint_names_size = 0usize;
         for dll in dlls {
             for import in &dll.imports {
@@ -550,7 +559,7 @@ impl DelayImportBuilder {
                             "delay-import names must be nonempty and contain no NUL bytes",
                         ));
                     }
-                    // 2 bytes hint + name + null terminator + padding to even
+                    // Each entry: 2-byte hint, name, null terminator, padding to an even size.
                     let entry_size = name.len().checked_add(3).ok_or_else(|| {
                         Error::invalid_data_directory("delay-import name size overflow")
                     })?;
@@ -564,7 +573,7 @@ impl DelayImportBuilder {
             }
         }
 
-        // DLL names
+        // DLL names.
         let mut dll_names_size = 0usize;
         for dll in dlls {
             dll_names_size = dll_names_size
@@ -602,8 +611,7 @@ impl DelayImportBuilder {
         })
     }
 
-    /// Build the delay import data.
-    /// Returns `(section_data, size)`.
+    /// Build the delay import data and return `(section_data, size)`.
     ///
     /// # Panics
     ///
@@ -614,13 +622,16 @@ impl DelayImportBuilder {
             .expect("delay-import build failed: use try_build() for fallible serialization")
     }
 
-    /// Build a delay-import table with checked RVAs and sizes.
+    /// Build a delay import table. Use checked RVAs and sizes.
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Self::try_calculate_size`], or an
-    /// invalid-data-directory error if the table exceeds `u32`, its RVA range
-    /// overflows, or (for PE32) an RVA would reach the ordinal flag bit.
+    /// Returns the errors of [`Self::try_calculate_size`]. Also returns an
+    /// invalid-data-directory error if one of these conditions occurs:
+    ///
+    /// - The table is larger than `u32`.
+    /// - The RVA range of the table overflows.
+    /// - For PE32, an RVA reaches the ordinal flag bit.
     pub fn try_build(&self, dlls: &[DelayLoadedDll]) -> Result<(Vec<u8>, u32)> {
         if dlls.is_empty() {
             return Ok((Vec::new(), 0));
@@ -657,7 +668,7 @@ impl DelayImportBuilder {
         let mut dll_name = Cursor::new(layout.dll_names_offset);
 
         for dll in dlls {
-            // Write descriptor. Attributes 1 means that the fields are RVAs
+            // Write the descriptor. Attributes value 1 means that the fields are RVAs
             // (the modern format).
             let descriptor = DelayLoadDescriptor {
                 attributes: 1,
@@ -675,7 +686,7 @@ impl DelayImportBuilder {
             dll_name.put(&mut data, dll.name.as_bytes())?;
             dll_name.skip(1)?;
 
-            // Write IAT, INT entries and hint/names
+            // Write the IAT entries, the INT entries and the hint/name entries.
             for import in &dll.imports {
                 let (by_ordinal, thunk_value) = match import {
                     DelayImportThunk::Ordinal(ord) => (true, u32::from(*ord)),
@@ -695,13 +706,13 @@ impl DelayImportBuilder {
                 self.write_thunk(&mut name_table, &mut data, by_ordinal, thunk_value)?;
             }
 
-            // Null terminator for IAT/INT, and the zeroed module handle
+            // Skip the null terminators of the IAT and the INT, and the zeroed module handle.
             iat.skip(thunk_size)?;
             name_table.skip(thunk_size)?;
             handle.skip(thunk_size)?;
         }
 
-        // Null terminator descriptor is already zeros
+        // The null terminator descriptor is already zero.
 
         Ok(data)
     }
@@ -711,7 +722,7 @@ impl DelayImportBuilder {
         if self.is_64bit { 8 } else { 4 }
     }
 
-    /// RVA of byte `offset` within the built delay-import data.
+    /// Return the RVA of byte `offset` in the built delay import data.
     fn rva_at(&self, offset: usize) -> Result<u32> {
         u32::try_from(offset)
             .ok()
@@ -745,13 +756,13 @@ impl DelayImportBuilder {
 struct DelayImportLayout {
     /// Size of the descriptor array, with its null terminator.
     descriptors_size: usize,
-    /// Offset of the INT.
+    /// Offset of the INT in the built buffer.
     name_table_offset: usize,
-    /// Offset of the module handles.
+    /// Offset of the module handles in the built buffer.
     handles_offset: usize,
-    /// Offset of the first hint/name entry.
+    /// Offset of the first hint/name entry in the built buffer.
     hint_names_offset: usize,
-    /// Offset of the first DLL name.
+    /// Offset of the first DLL name in the built buffer.
     dll_names_offset: usize,
     /// Size of the full table.
     total_size: usize,

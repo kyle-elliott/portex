@@ -5,7 +5,7 @@ use crate::coff::MachineType;
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// Architecture-aware representation of the PE exception directory.
+/// The PE exception directory in the record format of the machine architecture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExceptionTable {
     /// AMD64 `RUNTIME_FUNCTION` records.
@@ -14,7 +14,7 @@ pub enum ExceptionTable {
     Arm(PackedExceptionDirectory),
     /// ARM64, ARM64EC, or ARM64X packed `.pdata` records.
     Arm64(PackedExceptionDirectory),
-    /// Bytes for machines whose exception ABI is not modelled by this crate.
+    /// Raw bytes for a machine with an exception ABI that this crate does not model.
     Raw {
         /// `IMAGE_FILE_HEADER.Machine` value.
         machine: u16,
@@ -27,8 +27,10 @@ impl ExceptionTable {
     /// Parse the exception directory according to `machine`.
     ///
     /// # Errors
-    /// Returns an error if the table cannot be read or parsed, or if ARM/ARM64
-    /// records are misaligned or (ARM64) use reserved flag 3.
+    /// Returns an error in these conditions:
+    /// - The table cannot be read or parsed.
+    /// - ARM or ARM64 records are misaligned.
+    /// - ARM64 records use the reserved flag 3.
     pub fn parse<F>(machine: u16, pdata_rva: u32, pdata_size: u32, read_at_rva: F) -> Result<Self>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,

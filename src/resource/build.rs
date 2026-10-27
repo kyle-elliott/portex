@@ -4,12 +4,12 @@ use super::{
 };
 use crate::prelude::*;
 
-/// A resource entry with owned data for building.
+/// A resource entry that owns its data, used to build a resource directory.
 #[derive(Debug, Clone)]
 pub struct ResourceEntry {
     /// Resource type (level 1).
     pub type_id: ResourceId,
-    /// Resource name/ID (level 2).
+    /// Resource name or ID (level 2).
     pub name: ResourceId,
     /// Language ID (level 3).
     pub language: u16,
@@ -20,7 +20,7 @@ pub struct ResourceEntry {
 }
 
 impl ResourceEntry {
-    /// Create a new resource entry with numeric type and ID.
+    /// Create a resource entry with a numeric type and a numeric ID.
     #[must_use]
     pub fn new(type_id: u16, id: u16, language: u16, data: Vec<u8>) -> Self {
         Self {
@@ -32,31 +32,31 @@ impl ResourceEntry {
         }
     }
 
-    /// Create a new resource entry with a standard type.
+    /// Create a resource entry with a standard resource type.
     #[must_use]
     pub fn with_type(rt: ResourceType, id: u16, language: u16, data: Vec<u8>) -> Self {
         Self::new(rt as u16, id, language, data)
     }
 
-    /// Create a manifest resource.
+    /// Create a manifest resource (`RT_MANIFEST`, ID 1, language 0x0409).
     #[must_use]
     pub fn manifest(data: Vec<u8>) -> Self {
         Self::with_type(ResourceType::Manifest, 1, 0x0409, data)
     }
 
-    /// Create a version info resource.
+    /// Create a version information resource (`RT_VERSION`, ID 1, language 0x0409).
     #[must_use]
     pub fn version_info(data: Vec<u8>) -> Self {
         Self::with_type(ResourceType::Version, 1, 0x0409, data)
     }
 }
 
-/// Builder for constructing a resource directory.
+/// Builder for a resource directory.
 ///
-/// The PE resource directory is a 3-level tree:
-/// - Level 1: Resource Type (e.g., `RT_ICON`, `RT_MANIFEST`)
-/// - Level 2: Resource Name/ID
-/// - Level 3: Language ID
+/// The PE resource directory is a tree with 3 levels:
+/// - Level 1: resource type (for example `RT_ICON`, `RT_MANIFEST`).
+/// - Level 2: resource name or ID.
+/// - Level 3: language ID.
 ///
 /// # Example
 /// ```ignore
@@ -71,7 +71,7 @@ pub struct ResourceBuilder {
 }
 
 impl ResourceBuilder {
-    /// Create a new resource builder.
+    /// Create an empty resource builder.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -81,10 +81,10 @@ impl ResourceBuilder {
 
     /// Create a builder from a parsed `ResourceDirectory`.
     ///
-    /// The directory must have been parsed with `resources_with_data()` so that
-    /// the `Resource::data` field is populated.
+    /// Parse the directory with `resources_with_data()` first. This sets the `Resource::data`
+    /// field.
     ///
-    /// Returns `None` if any resource is missing its data.
+    /// Returns `None` if a resource has no data.
     #[must_use]
     pub fn from_directory(directory: &ResourceDirectory) -> Option<Self> {
         let mut builder = Self::new();
@@ -107,7 +107,7 @@ impl ResourceBuilder {
         self
     }
 
-    /// Add a resource with standard type.
+    /// Add a resource with a standard resource type.
     pub fn add_resource(
         &mut self,
         rt: ResourceType,
@@ -123,12 +123,12 @@ impl ResourceBuilder {
         self.add(ResourceEntry::manifest(data))
     }
 
-    /// Add a version info resource.
+    /// Add a version information resource.
     pub fn add_version_info(&mut self, data: Vec<u8>) -> &mut Self {
         self.add(ResourceEntry::version_info(data))
     }
 
-    /// Calculate the total size needed for the resource section.
+    /// Calculate the total size of the resource section, in bytes.
     ///
     /// # Panics
     ///
@@ -139,16 +139,20 @@ impl ResourceBuilder {
             .expect("resource size overflow: use try_calculate_size()")
     }
 
-    /// Calculate the resource size with checked tree counts, UTF-16 lengths,
-    /// data lengths, and relative offsets.
+    /// Calculate the resource size, in bytes.
+    ///
+    /// This function checks the tree counts, the UTF-16 lengths, the data lengths and the
+    /// relative offsets.
     ///
     /// # Errors
     ///
-    /// Returns an invalid-data-directory error if more than 262,144 entries
-    /// were added, a type/name/language triple is duplicated, a name exceeds
-    /// 65,535 UTF-16 units, a payload exceeds `u32`, a directory level has more
-    /// than 65,535 entries, or the serialized tree exceeds the 31-bit
-    /// relative-offset range.
+    /// Returns an invalid-data-directory error if one of these conditions is true:
+    /// - More than 262,144 entries were added.
+    /// - Two entries have the same type, name and language.
+    /// - A name is longer than 65,535 UTF-16 units.
+    /// - A payload is larger than `u32::MAX` bytes.
+    /// - A directory level has more than 65,535 entries.
+    /// - The serialized tree is larger than the 31-bit range of a relative offset.
     pub fn try_calculate_size(&self) -> Result<usize> {
         if self.entries.is_empty() {
             return Ok(0);
@@ -158,7 +162,9 @@ impl ResourceBuilder {
     }
 
     /// Build the resource directory data.
-    /// Returns `(data, total_size)`.
+    ///
+    /// `base_rva` is the RVA of the start of the resource directory. Returns
+    /// `(data, total_size)`.
     ///
     /// # Panics
     ///
@@ -169,13 +175,15 @@ impl ResourceBuilder {
             .expect("resource build failed: use try_build() for fallible serialization")
     }
 
-    /// Build the resource tree with checked relative offsets and data RVAs.
-    /// Returns `(data, total_size)`.
+    /// Build the resource tree with checked relative offsets and checked data RVAs.
+    ///
+    /// `base_rva` is the RVA of the start of the resource directory. Returns
+    /// `(data, total_size)`.
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Self::try_calculate_size`], or an
-    /// invalid-data-directory error if `base_rva` plus the tree size or any
+    /// Returns the errors of [`Self::try_calculate_size`]. Also returns an
+    /// invalid-data-directory error if `base_rva` plus the tree size overflows `u32`, or if a
     /// payload RVA overflows `u32`.
     pub fn try_build(&self, base_rva: u32) -> Result<(Vec<u8>, u32)> {
         if self.entries.is_empty() {
@@ -249,8 +257,8 @@ impl ResourceBuilder {
         Ok((data, total_size))
     }
 
-    /// Give each directory table, data entry, name string and payload an
-    /// offset relative to the start of the resource directory.
+    /// Give an offset to each directory table, data entry, name string and payload. Each
+    /// offset is relative to the start of the resource directory.
     ///
     /// Call [`Self::validate_entries`] first.
     fn compute_layout(&self) -> Result<ResourceLayout<'_>> {
@@ -375,8 +383,10 @@ impl ResourceBuilder {
         Ok(())
     }
 
-    /// Validate each entry's name lengths, payload size, and type/name/language
-    /// uniqueness, grouping the languages by type and name.
+    /// Validate the name lengths and the payload size of each entry. Make sure that each
+    /// type/name/language triple is unique.
+    ///
+    /// Returns the languages, grouped by type and name.
     fn group_validated_entries(&self) -> Result<GroupedLanguages> {
         let mut grouped = GroupedLanguages::new();
         let mut seen = BTreeSet::new();
@@ -404,8 +414,8 @@ impl ResourceBuilder {
     }
 }
 
-/// Size in bytes of the directory tables, data entries, and name strings of
-/// the tree described by `grouped`, excluding payload data.
+/// Size in bytes of the tree that `grouped` describes: the directory tables, data entries and
+/// name strings. The size does not include the payload data.
 fn directory_tree_size(grouped: &GroupedLanguages) -> Result<u64> {
     checked_u16_count(grouped.len(), "resource type")?;
 
@@ -580,6 +590,8 @@ where
 }
 
 /// Write the `IMAGE_RESOURCE_DATA_ENTRY` and the payload of `lang`.
+///
+/// `base_rva` is the RVA of the start of the resource directory.
 fn write_language_data(data: &mut [u8], base_rva: u32, lang: &LanguageLayout<'_>) -> Result<()> {
     let data_rva = base_rva
         .checked_add(lang.data_offset)
@@ -627,7 +639,7 @@ fn checked_u64_add(left: u64, right: u64, context: &str) -> Result<u64> {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ResourceIdKey {
-    // Named entries must precede numeric IDs in every resource directory.
+    // In each resource directory, the named entries must come before the numeric IDs.
     Name(String),
     Id(u16),
 }

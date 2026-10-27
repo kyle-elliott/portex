@@ -53,17 +53,25 @@ impl PeImage {
         Ok(())
     }
 
-    /// Update imports: tries in-place replacement first, otherwise appends to target section.
-    /// If `target_section` is `None`, uses the section containing existing imports, or ".rdata", or last section.
-    /// Returns the import RVA on success, or 0 if `imports` is empty and the
-    /// import and IAT directories were cleared.
+    /// Update the imports.
+    ///
+    /// The function first tries to replace the data in place. If the data does not fit, the
+    /// function appends it to the target section. If `target_section` is `None`, the function
+    /// uses one of these sections, in this order:
+    /// 1. The section that contains the existing imports.
+    /// 2. `.rdata`.
+    /// 3. The last section.
+    ///
+    /// Returns the RVA of the import directory. Returns 0 if `imports` is empty; then the
+    /// function clears the import and IAT data directories.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data-directory table has no IAT slot and cannot
-    /// be extended, if the import table cannot be serialized or its descriptor
-    /// table exceeds `u32`, if the target section does not exist, or if
-    /// appending the data breaks the image layout.
+    /// Returns an error in these conditions:
+    /// - The data directory table has no IAT slot and cannot be extended.
+    /// - The import table cannot be serialized, or its descriptor table does not fit in `u32`.
+    /// - The target section does not exist.
+    /// - The append breaks the image layout.
     pub fn update_imports(
         &mut self,
         imports: &crate::import::ImportTable,
@@ -79,17 +87,17 @@ impl PeImage {
         }
         self.ensure_data_directory_slot(DataDirectoryType::Iat)?;
 
-        // Calculate required size
+        // Calculate the required size.
         let builder_temp = ImportTableBuilder::new(self.is_64bit(), 0);
         let required_size = builder_temp.try_calculate_size(imports)?;
 
-        // Check if we can replace in-place
+        // Try to replace the data in place.
         let existing_dir = self.data_directory(DataDirectoryType::Import).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
             && dir.size as usize >= required_size
         {
-            // Can replace in-place
+            // The data fits in place.
             let builder = ImportTableBuilder::new(self.is_64bit(), dir.virtual_address);
             let (data, iat_rva, iat_size) = builder.try_build(imports)?;
 
@@ -105,15 +113,15 @@ impl PeImage {
             }
         }
 
-        // Find target section to append to:
-        // 1. User-specified section
-        // 2. Section containing existing imports (if any)
-        // 3. .rdata
-        // 4. Last section
+        // Find the target section for the append, in this order:
+        // 1. The section that the caller specified.
+        // 2. The section that contains the existing imports, if there are imports.
+        // 3. `.rdata`.
+        // 4. The last section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
-                // Try to find section containing existing import directory
+                // Find the section that contains the existing import directory.
                 if let Some(ref dir) = existing_dir
                     && dir.is_present()
                     && let Some(section) = self.section_by_rva(dir.virtual_address)
@@ -131,23 +139,23 @@ impl PeImage {
             })
             .unwrap_or_else(|| ".rdata".to_string());
 
-        // Find section index (needed to avoid borrow issues)
+        // Find the section index. An index prevents borrow problems.
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
         let Some(section_idx) = section_idx else {
             return Err(crate::Error::invalid_section(section_name));
         };
 
-        // Calculate RVA where data will be placed
+        // Calculate the RVA at which to put the data.
         let append_rva = self.prepare_section_append(section_idx)?;
 
-        // Build import data at the append RVA
+        // Build the import data at the append RVA.
         let builder = ImportTableBuilder::new(self.is_64bit(), append_rva);
         let (data, iat_rva, iat_size) = builder.try_build(imports)?;
 
-        // Append to section
+        // Append the data to the section.
         self.commit_section_append(section_idx, append_rva, &data)?;
 
-        // Update data directories
+        // Update the data directories.
         let import_size = import_descriptor_table_size(imports.dlls.len())?;
         self.set_data_directory(DataDirectoryType::Import, append_rva, import_size);
         self.set_data_directory(DataDirectoryType::Iat, iat_rva, iat_size);
@@ -155,17 +163,26 @@ impl PeImage {
         Ok(append_rva)
     }
 
-    /// Update exports: tries in-place replacement first, otherwise appends to target section.
-    /// If `target_section` is `None`, uses the section containing existing exports, or ".rdata", or last section.
-    /// Returns the export RVA on success, or 0 if `exports` has neither
-    /// functions nor a DLL name and the export directory was cleared.
+    /// Update the exports.
+    ///
+    /// The function first tries to replace the data in place. If the data does not fit, the
+    /// function appends it to the target section. If `target_section` is `None`, the function
+    /// uses one of these sections, in this order:
+    /// 1. The section that contains the existing exports.
+    /// 2. `.rdata`.
+    /// 3. The last section.
+    ///
+    /// Returns the RVA of the export directory. Returns 0 if `exports` has no functions and no
+    /// DLL name; then the function clears the export data directory.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data-directory table has no export slot and
-    /// cannot be extended, if the export table cannot be serialized (see
-    /// [`crate::export::ExportTableBuilder::try_build`]), if the target section
-    /// does not exist, or if appending the data breaks the image layout.
+    /// Returns an error in these conditions:
+    /// - The data directory table has no export slot and cannot be extended.
+    /// - The export table cannot be serialized (see
+    ///   [`crate::export::ExportTableBuilder::try_build`]).
+    /// - The target section does not exist.
+    /// - The append breaks the image layout.
     pub fn update_exports(
         &mut self,
         exports: &crate::export::ExportTable,
@@ -180,16 +197,16 @@ impl PeImage {
         }
         self.ensure_data_directory_slot(DataDirectoryType::Export)?;
 
-        // Calculate required size
+        // Calculate the required size.
         let required_size = ExportTableBuilder::try_calculate_size(exports)?;
 
-        // Check if we can replace in-place
+        // Try to replace the data in place.
         let existing_dir = self.data_directory(DataDirectoryType::Export).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
             && dir.size as usize >= required_size
         {
-            // Can replace in-place
+            // The data fits in place.
             let builder = ExportTableBuilder::new(dir.virtual_address);
             let (data, export_size) = builder.try_build(exports)?;
 
@@ -203,15 +220,15 @@ impl PeImage {
             }
         }
 
-        // Find target section to append to:
-        // 1. User-specified section
-        // 2. Section containing existing exports (if any)
-        // 3. .rdata
-        // 4. Last section
+        // Find the target section for the append, in this order:
+        // 1. The section that the caller specified.
+        // 2. The section that contains the existing exports, if there are exports.
+        // 3. `.rdata`.
+        // 4. The last section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
-                // Try to find section containing existing export directory
+                // Find the section that contains the existing export directory.
                 if let Some(ref dir) = existing_dir
                     && dir.is_present()
                     && let Some(section) = self.section_by_rva(dir.virtual_address)
@@ -229,30 +246,32 @@ impl PeImage {
             })
             .unwrap_or_else(|| ".rdata".to_string());
 
-        // Find section index (needed to avoid borrow issues)
+        // Find the section index. An index prevents borrow problems.
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
         let Some(section_idx) = section_idx else {
             return Err(crate::Error::invalid_section(section_name));
         };
 
-        // Calculate RVA where data will be placed
+        // Calculate the RVA at which to put the data.
         let append_rva = self.prepare_section_append(section_idx)?;
 
-        // Build export data at the append RVA
+        // Build the export data at the append RVA.
         let builder = ExportTableBuilder::new(append_rva);
         let (data, export_size) = builder.try_build(exports)?;
 
-        // Append to section
+        // Append the data to the section.
         self.commit_section_append(section_idx, append_rva, &data)?;
 
-        // Update data directory
+        // Update the data directory.
         self.set_data_directory(DataDirectoryType::Export, append_rva, export_size);
 
         Ok(append_rva)
     }
 
-    /// Recalculate layout, panicking if manually-constructed state cannot be
-    /// represented. Prefer [`Self::try_update_layout`] for fallible workflows.
+    /// Recalculate the layout, and panics if the state cannot be represented.
+    ///
+    /// A manually constructed state can cause the panic. For fallible workflows, use
+    /// [`Self::try_update_layout`].
     ///
     /// # Panics
     ///
@@ -263,18 +282,19 @@ impl PeImage {
         );
     }
 
-    /// Recalculate section RVAs/file offsets and all derived header fields.
+    /// Recalculate the section RVAs, the section file offsets and all derived header fields.
     ///
-    /// The update is atomic: if an address, size, or aggregate overflows, the
-    /// image is left unchanged.
+    /// The update is atomic. If an address, a size or an aggregate overflows, the function does
+    /// not change the image.
     ///
     /// # Errors
     ///
-    /// Returns an error if the optional header's `SectionAlignment` or
-    /// `FileAlignment` is invalid, if there are more than
-    /// [`MAX_NUMBER_OF_SECTIONS`] sections, if `e_lfanew` places the PE header
-    /// inside the DOS header, or if any header size, section address, section
-    /// size, or aggregate size overflows its field.
+    /// Returns an error in these conditions:
+    /// - The `SectionAlignment` or the `FileAlignment` of the optional header is invalid.
+    /// - The image has more than [`MAX_NUMBER_OF_SECTIONS`] sections.
+    /// - The file offset `e_lfanew` puts the PE header inside the DOS header.
+    /// - A header size, a section address, a section size or an aggregate size overflows its
+    ///   field.
     pub fn try_update_layout(&mut self) -> Result<()> {
         let config = LayoutConfig::from_optional_header(&self.optional_header);
         validate_layout_config(&config)?;
@@ -285,7 +305,7 @@ impl PeImage {
             )));
         }
 
-        // Calculate headers size
+        // Calculate the size of the headers.
         let pe_offset = usize::try_from(self.dos_header.e_lfanew)
             .map_err(|_| Error::invalid_section("e_lfanew is negative"))?;
         if pe_offset < DosHeader::SIZE {
@@ -305,11 +325,11 @@ impl PeImage {
         let size_of_headers = layout::checked_align_up(headers_size, config.file_alignment)
             .ok_or_else(|| Error::invalid_section("SizeOfHeaders exceeds u32"))?;
 
-        // Work on a clone so an overflow cannot leave half-updated sections.
+        // Work on a clone, so that an overflow cannot leave sections half updated.
         let mut sections = self.sections.clone();
         layout::try_layout_sections(&mut sections, &config, headers_size)?;
 
-        // Update size_of_image
+        // Update `SizeOfImage`.
         let size_of_image = layout::try_calculate_size_of_image(&sections, &config)?;
         let aggregates = calculate_optional_layout_fields(&sections)?;
         let section_count = u16::try_from(sections.len())
@@ -322,7 +342,7 @@ impl PeImage {
         self.set_size_of_image(size_of_image);
         self.apply_optional_layout_fields(aggregates, directory_count);
 
-        // Update COFF header
+        // Update the COFF header.
         self.coff_header.number_of_sections = section_count;
         self.coff_header.size_of_optional_header = serialized_optional_size_u16;
         Ok(())
@@ -364,10 +384,12 @@ impl PeImage {
 
     // ========== Section Management ==========
 
-    /// Remove a section by index. Returns the removed section, or None if index is out of bounds.
+    /// Remove the section at `index`.
     ///
-    /// **Warning**: Removing a section may break the PE if other data directories
-    /// or code reference data in that section. Use with caution.
+    /// Returns the removed section, or `None` if `index` is out of bounds.
+    ///
+    /// **Warning**: Removing a section can break the PE image if data directories or code refer
+    /// to data in that section. Use this function with caution.
     pub fn remove_section_at(&mut self, index: usize) -> Option<Section> {
         if index >= self.sections.len() {
             return None;
@@ -384,21 +406,24 @@ impl PeImage {
         self.sections.iter().find(|s| s.name() == name)
     }
 
-    /// Find a section by name (mutable).
+    /// Find a section by name and returns a mutable reference.
     pub fn find_section_mut(&mut self, name: &str) -> Option<&mut Section> {
         self.sections.iter_mut().find(|s| s.name() == name)
     }
 
-    /// Resize a section's data. If new size is larger, pads with zeros.
-    /// If smaller, truncates the data.
+    /// Resize the data of a section.
     ///
-    /// Returns true if the section was found and resized, false otherwise.
+    /// If the new size is larger, the function pads the data with zeros. If the new size is
+    /// smaller, the function truncates the data.
+    ///
+    /// Returns `true` if the function found and resized the section, `false` otherwise.
     pub fn resize_section(&mut self, name: &str, new_size: usize) -> bool {
         self.try_resize_section(name, new_size).unwrap_or(false)
     }
 
-    /// Resize a section after checking that its virtual size fits in a PE
-    /// section header. Returns `Ok(false)` if no section has that name.
+    /// Resize a section after a check that its virtual size fits in a PE section header.
+    ///
+    /// Returns `Ok(false)` if no section has that name.
     ///
     /// # Errors
     ///
@@ -417,9 +442,10 @@ impl PeImage {
         }
     }
 
-    /// Add a new section with the given name, data, and characteristics.
-    /// This is a convenience method that creates a Section from parts.
-    /// The section layout (RVA, file offset) will be calculated on the next `update_layout()` or `build()`.
+    /// Add a new section with the given name, data and characteristics.
+    ///
+    /// This convenience function creates a `Section` from these parts. The next
+    /// `update_layout()` or `build()` calculates the section layout (RVA and file offset).
     ///
     /// # Example
     ///
@@ -443,7 +469,7 @@ impl PeImage {
             .expect("invalid PE section: use try_add_section_with_data() for fallible updates");
     }
 
-    /// Add a section from its ergonomic parts with checked count/data size.
+    /// Add a section from its parts, with a check of the section count and the data size.
     ///
     /// # Errors
     ///

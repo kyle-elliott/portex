@@ -1,7 +1,7 @@
 //! Bound import directory parsing.
 //!
-//! Bound imports are a legacy optimization where import addresses are pre-resolved
-//! at link time. The loader can skip address resolution if the bound DLL hasn't changed.
+//! Bound imports are a legacy optimization: the linker resolves import addresses before load
+//! time. If the bound DLL did not change, the loader can skip address resolution.
 //!
 //! # Examples
 //!
@@ -27,16 +27,16 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// `IMAGE_BOUND_FORWARDER_REF` structure.
+/// A forwarder reference of a bound import (`IMAGE_BOUND_FORWARDER_REF`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundForwarderRef {
     /// Timestamp of the forwarder DLL.
     pub time_date_stamp: u32,
-    /// Offset to module name (from start of bound import data).
+    /// Offset of the module name from the start of the bound import data. This is not an RVA.
     pub offset_module_name: u16,
     /// Reserved.
     pub reserved: u16,
-    /// Resolved module name.
+    /// Module name, read from `offset_module_name`.
     pub module_name: String,
 }
 
@@ -44,7 +44,7 @@ impl BoundForwarderRef {
     /// Size of the structure in bytes.
     pub const SIZE: usize = 8;
 
-    /// Parse from raw bytes.
+    /// Parse the structure from raw bytes. `module_name` stays empty.
     ///
     /// # Errors
     ///
@@ -63,16 +63,16 @@ impl BoundForwarderRef {
     }
 }
 
-/// `IMAGE_BOUND_IMPORT_DESCRIPTOR` structure.
+/// A bound import descriptor (`IMAGE_BOUND_IMPORT_DESCRIPTOR`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundImportDescriptor {
     /// Timestamp of the bound DLL.
     pub time_date_stamp: u32,
-    /// Offset to module name (from start of bound import data).
+    /// Offset of the module name from the start of the bound import data. This is not an RVA.
     pub offset_module_name: u16,
     /// Number of forwarder references.
     pub number_of_module_forwarder_refs: u16,
-    /// Resolved module name.
+    /// Module name, read from `offset_module_name`.
     pub module_name: String,
     /// Forwarder references.
     pub forwarder_refs: Vec<BoundForwarderRef>,
@@ -82,7 +82,9 @@ impl BoundImportDescriptor {
     /// Size of the structure in bytes.
     pub const SIZE: usize = 8;
 
-    /// Parse from raw bytes. Returns `None` if this is the null terminator.
+    /// Parse the structure from raw bytes. Returns `None` for the null terminator.
+    ///
+    /// `module_name` and `forwarder_refs` stay empty.
     ///
     /// # Errors
     ///
@@ -96,7 +98,7 @@ impl BoundImportDescriptor {
         let offset_module_name = u16::from_le_bytes([n0, n1]);
         let number_of_module_forwarder_refs = u16::from_le_bytes([c0, c1]);
 
-        // Null terminator check
+        // Check for the null terminator.
         if time_date_stamp == 0 && offset_module_name == 0 && number_of_module_forwarder_refs == 0 {
             return Ok(None);
         }
@@ -111,7 +113,7 @@ impl BoundImportDescriptor {
     }
 }
 
-/// Bound import directory.
+/// Bound import directory: the data of the `BoundImport` data directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundImportDirectory {
     /// List of bound import descriptors.
@@ -123,16 +125,20 @@ impl BoundImportDirectory {
     ///
     /// # Errors
     ///
-    /// Returns an invalid-data-directory error if a descriptor or forwarder
-    /// record is truncated, a module-name offset is zero or out of range, a
-    /// name is not null-terminated, a forwarder's reserved field is nonzero,
-    /// or the directory has no null terminator; returns an invalid-UTF-8
-    /// error if a module name is not valid UTF-8.
+    /// Returns an invalid-data-directory error in these conditions:
+    ///
+    /// - A descriptor or forwarder record is truncated.
+    /// - A module-name offset is zero or out of range.
+    /// - A name is not null-terminated.
+    /// - The reserved field of a forwarder is not zero.
+    /// - The directory has no null terminator.
+    ///
+    /// Returns an invalid-UTF-8 error if a module name is not valid UTF-8.
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut descriptors = Vec::new();
         let mut offset = 0;
 
-        // Parse descriptors and their immediately-following forwarder records.
+        // Parse each descriptor and the forwarder records that immediately follow it.
         while offset < data.len() {
             let descriptor_end = offset
                 .checked_add(BoundImportDescriptor::SIZE)
@@ -147,13 +153,13 @@ impl BoundImportDirectory {
                             "bound-import descriptor has a zero module-name offset",
                         ));
                     }
-                    // Resolve module name
+                    // Read the module name.
                     let name_offset = usize::from(desc.offset_module_name);
                     desc.module_name = read_cstring(data.get(name_offset..).ok_or_else(|| {
                         Error::invalid_data_directory("bound-import module name is out of range")
                     })?)?;
 
-                    // Parse forwarder refs
+                    // Parse the forwarder references.
                     let fwd_start = descriptor_end;
                     for i in 0..usize::from(desc.number_of_module_forwarder_refs) {
                         let relative = i.checked_mul(BoundForwarderRef::SIZE).ok_or_else(|| {
@@ -193,7 +199,7 @@ impl BoundImportDirectory {
                         desc.forwarder_refs.push(fwd);
                     }
 
-                    // Skip past descriptor and its forwarder refs
+                    // Skip past the descriptor and its forwarder references.
                     offset = fwd_start
                         .checked_add(
                             usize::from(desc.number_of_module_forwarder_refs)
@@ -226,7 +232,7 @@ fn read_cstring(data: &[u8]) -> Result<String> {
         .map_err(|_| Error::invalid_utf8())
 }
 
-/// Builder for serializing bound import tables.
+/// Builder that serializes bound import directories.
 #[derive(Debug, Default)]
 pub struct BoundImportBuilder;
 
@@ -248,20 +254,23 @@ impl BoundImportBuilder {
             .expect("bound-import size overflow: use try_calculate_size()")
     }
 
-    /// Calculate the size and validate u16-relative name offsets/counts.
+    /// Calculate the size, and validate the 16-bit name offsets and forwarder counts.
     ///
     /// # Errors
     ///
-    /// Returns an invalid-data-directory error if a descriptor has more than
-    /// `u16::MAX` forwarders, a forwarder's reserved field is nonzero, a module
-    /// name is empty or contains NUL, the size overflows, or the total exceeds
-    /// `u16::MAX` (the limit of the 16-bit name offsets).
+    /// Returns an invalid-data-directory error in these conditions:
+    ///
+    /// - A descriptor has more than `u16::MAX` forwarders.
+    /// - The reserved field of a forwarder is not zero.
+    /// - A module name is empty or contains NUL.
+    /// - The size overflows.
+    /// - The total is more than `u16::MAX` (the limit of the 16-bit name offsets).
     pub fn try_calculate_size(directory: &BoundImportDirectory) -> Result<usize> {
         if directory.descriptors.is_empty() {
             return Ok(0);
         }
 
-        // Descriptors + forwarder refs + null terminator
+        // Descriptors, forwarder references and the null terminator.
         let mut desc_size = BoundImportDescriptor::SIZE; // null terminator
         for desc in &directory.descriptors {
             u16::try_from(desc.forwarder_refs.len())
@@ -288,7 +297,7 @@ impl BoundImportBuilder {
                 })?;
         }
 
-        // Module names (null-terminated strings)
+        // Module names (null-terminated strings).
         let mut names_size = 0usize;
         for desc in &directory.descriptors {
             names_size = checked_bound_name_size(names_size, &desc.module_name)?;
@@ -308,8 +317,7 @@ impl BoundImportBuilder {
         Ok(total)
     }
 
-    /// Build the bound import data.
-    /// Returns `(data, size)`.
+    /// Build the bound import data. Returns `(data, size)`.
     ///
     /// # Panics
     ///
@@ -320,13 +328,12 @@ impl BoundImportBuilder {
             .expect("bound-import build failed: use try_build() for fallible serialization")
     }
 
-    /// Build a bound-import directory with checked relative offsets.
+    /// Build the bound import data, with checked relative offsets. Returns `(data, size)`.
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Self::try_calculate_size`], or an
-    /// invalid-data-directory error if the data size exceeds `u32` or a name
-    /// offset exceeds `u16`.
+    /// Returns the errors of [`Self::try_calculate_size`]. Returns an invalid-data-directory
+    /// error if the data size is more than `u32::MAX` or a name offset is more than `u16::MAX`.
     pub fn try_build(directory: &BoundImportDirectory) -> Result<(Vec<u8>, u32)> {
         if directory.descriptors.is_empty() {
             return Ok((Vec::new(), 0));

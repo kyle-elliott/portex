@@ -1,4 +1,4 @@
-//! Fuzz target that parses arbitrary bytes as PE files and images.
+//! Fuzz target that parses arbitrary bytes as PE files and as PE images.
 
 #![no_main]
 

@@ -1,4 +1,4 @@
-//! Core executable-image regression tests.
+//! Regression tests for core executable images.
 
 use portex::directories::{
     Certificate, CertificateRevision, CertificateType, ExportAddress, ExportDirectory, ExportTable,

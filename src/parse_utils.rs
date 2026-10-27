@@ -3,7 +3,7 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// Read exactly `len` bytes from an RVA callback.
+/// Read exactly `len` bytes at an RVA through the `read_at_rva` callback.
 pub(crate) fn read_exact_rva<F>(
     read_at_rva: &F,
     rva: u32,
@@ -23,8 +23,10 @@ where
     Ok(data)
 }
 
-/// Read a required null-terminated UTF-8 string without requiring `max_len`
-/// bytes to exist after the string in the image.
+/// Read a required null-terminated UTF-8 string at an RVA.
+///
+/// `max_len` is a limit only: the image does not have to contain `max_len` bytes after the
+/// string.
 pub(crate) fn read_c_string<F>(
     read_at_rva: &F,
     rva: u32,
@@ -53,7 +55,7 @@ where
     )))
 }
 
-/// Read a C string whose bytes must remain inside an enclosing RVA range.
+/// Read a C string at an RVA. The string bytes must stay inside the enclosing RVA range.
 pub(crate) fn read_c_string_in_range<F>(
     read_at_rva: &F,
     rva: u32,
@@ -77,7 +79,7 @@ where
     read_c_string(read_at_rva, rva, max_len.min(available), context)
 }
 
-/// Validate that a fixed-width table fits in an enclosing RVA range.
+/// Make sure that a table of fixed-size entries at an RVA fits in the enclosing RVA range.
 pub(crate) fn bounded_table_range(
     table_rva: u32,
     count: u32,

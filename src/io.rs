@@ -1,8 +1,8 @@
 //! Sequential streams and positional image readers.
 //!
-//! [`nostdio`] supplies `no_std`-capable sequential [`Read`], [`Write`], and
-//! [`Seek`] traits. Portex's [`ReadAt`] trait remains positional so mapped or
-//! remote images can be queried without sharing a stream cursor.
+//! [`nostdio`] supplies the sequential [`Read`], [`Write`] and [`Seek`] traits, which also
+//! work in `no_std` builds. The Portex [`ReadAt`] trait stays positional. Thus you can query
+//! mapped or remote images without a shared stream cursor.
 
 pub use nostdio::*;
 

@@ -1,7 +1,7 @@
 //! Security directory (Authenticode) parsing.
 //!
 //! The security directory contains `WIN_CERTIFICATE` structures for code signing.
-//! Unlike other data directories, this one uses a **file offset** (not RVA).
+//! Unlike the other data directories, this directory uses a **file offset**, not an RVA.
 //!
 //! # Examples
 //!
@@ -31,12 +31,12 @@ pub enum CertificateRevision {
     Revision1,
     /// `WIN_CERT_REVISION_2_0`
     Revision2,
-    /// Revision not known to this version of the crate.
+    /// A revision that this version of the crate does not know.
     Unknown(u16),
 }
 
 impl CertificateRevision {
-    /// Convert from raw u16.
+    /// Convert from the raw `wRevision` value.
     #[must_use]
     pub const fn from_u16(value: u16) -> Self {
         match value {
@@ -60,20 +60,20 @@ impl CertificateRevision {
 /// `WIN_CERTIFICATE` type values (`wCertificateType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertificateType {
-    /// `WIN_CERT_TYPE_X509` - X.509 certificate
+    /// `WIN_CERT_TYPE_X509`: an X.509 certificate.
     X509,
-    /// `WIN_CERT_TYPE_PKCS_SIGNED_DATA` - PKCS#7 `SignedData`
+    /// `WIN_CERT_TYPE_PKCS_SIGNED_DATA`: a PKCS#7 `SignedData` structure.
     PkcsSignedData,
     /// `WIN_CERT_TYPE_RESERVED_1`
     Reserved1,
-    /// `WIN_CERT_TYPE_TS_STACK_SIGNED` - Terminal Server Protocol Stack
+    /// `WIN_CERT_TYPE_TS_STACK_SIGNED`: Terminal Server Protocol Stack.
     TsStackSigned,
-    /// Certificate type not known to this version of the crate.
+    /// A certificate type that this version of the crate does not know.
     Unknown(u16),
 }
 
 impl CertificateType {
-    /// Convert from raw u16.
+    /// Convert from the raw `wCertificateType` value.
     #[must_use]
     pub const fn from_u16(value: u16) -> Self {
         match value {
@@ -98,37 +98,40 @@ impl CertificateType {
     }
 }
 
-/// `WIN_CERTIFICATE` structure.
+/// `WIN_CERTIFICATE`: one entry of the attribute certificate table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(
     clippy::struct_field_names,
     reason = "certificate_type mirrors the spec field wCertificateType; `type` is a keyword"
 )]
 pub struct Certificate {
-    /// Total length including the header but excluding alignment padding.
+    /// Total length in bytes (`dwLength`). The length includes the header but not the alignment
+    /// padding.
     pub length: u32,
-    /// Certificate revision.
+    /// Certificate revision (`wRevision`).
     pub revision: CertificateRevision,
-    /// Certificate type.
+    /// Certificate type (`wCertificateType`).
     pub certificate_type: CertificateType,
-    /// Raw certificate data (without header).
+    /// Raw certificate data (`bCertificate`), without the header.
     pub data: Vec<u8>,
 }
 
 impl Certificate {
-    /// Minimum header size (length + revision + type).
+    /// Size of the header in bytes (length, revision and type).
     pub const HEADER_SIZE: usize = 8;
 
-    /// Parse a single certificate from a byte slice.
-    /// Returns the certificate and number of bytes consumed (including padding).
+    /// Parse one certificate from a byte slice.
+    ///
+    /// Returns the certificate and the number of bytes that it uses, including the padding.
     ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::BufferTooSmall`](crate::error::ErrorKind::BufferTooSmall)
-    /// if `data` is shorter than the 8-byte header, and
-    /// [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
-    /// if `dwLength` is smaller than the header or the (8-byte aligned) length
-    /// exceeds `data`.
+    /// if `data` is shorter than the 8-byte header.
+    ///
+    /// Returns [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
+    /// if `dwLength` is smaller than the header, or if the length (aligned to 8 bytes) is
+    /// larger than `data`.
     pub fn parse(data: &[u8]) -> Result<(Self, usize)> {
         let Some((header, _)) = data.split_first_chunk::<{ Self::HEADER_SIZE }>() else {
             return Err(Error::buffer_too_small(Self::HEADER_SIZE, data.len()));
@@ -148,7 +151,7 @@ impl Certificate {
             )));
         };
 
-        // Certificates are 8-byte aligned
+        // Each certificate is aligned to 8 bytes.
         let padded_length = length
             .checked_add(7)
             .map(|value| value & !7)
@@ -173,20 +176,20 @@ impl Certificate {
     }
 }
 
-/// Security directory containing all certificates.
+/// The security directory (attribute certificate table), with all its certificates.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SecurityDirectory {
-    /// List of certificates.
+    /// The certificates, in file order.
     pub certificates: Vec<Certificate>,
 }
 
 impl SecurityDirectory {
-    /// Parse all certificates from the security directory data.
+    /// Parse all certificates from the data of the security directory.
     ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
-    /// if trailing bytes cannot hold a certificate header, and propagates any
+    /// if the bytes at the end are too short for a certificate header. Also returns each
     /// error from [`Certificate::parse`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut certificates = Vec::new();
@@ -210,42 +213,42 @@ impl SecurityDirectory {
     }
 }
 
-/// Builder for serializing security certificates.
+/// Builder that serializes security certificates.
 ///
-/// **Note:** The security directory is special - it uses FILE OFFSETS (not RVAs)
-/// and stores certificates in the overlay area after all section data.
-/// This builder only creates the certificate data; you must append it to
-/// the file manually and update the data directory pointer.
+/// **Note:** The security directory is special. Its data directory holds a file offset, not
+/// an RVA. The certificates are in the overlay, after all section data.
+///
+/// This builder only makes the certificate data. Append the data to the file yourself. Then
+/// update the data directory entry.
 #[derive(Debug, Default)]
 pub struct SecurityBuilder;
 
 impl SecurityBuilder {
-    /// Create a new builder.
+    /// Create a builder.
     #[must_use]
     pub fn new() -> Self {
         Self
     }
 
-    /// Calculate the total size needed for all certificates.
+    /// Calculate the total size of all certificates, in bytes.
     ///
-    /// Each certificate is 8-byte aligned.
+    /// Each certificate is aligned to 8 bytes.
     ///
     /// # Panics
     ///
-    /// Panics whenever [`Self::try_calculate_size`] would return an error.
+    /// Panics if [`Self::try_calculate_size`] returns an error.
     #[must_use]
     pub fn calculate_size(directory: &SecurityDirectory) -> usize {
         Self::try_calculate_size(directory)
             .expect("certificate table size overflow: use try_calculate_size()")
     }
 
-    /// Calculate the table size with checked `WIN_CERTIFICATE` lengths.
+    /// Calculate the table size, with checked `WIN_CERTIFICATE` lengths.
     ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
-    /// if any certificate length or the total table size overflows or exceeds
-    /// `u32`.
+    /// if a certificate length or the total table size overflows or is larger than `u32::MAX`.
     pub fn try_calculate_size(directory: &SecurityDirectory) -> Result<usize> {
         let size = directory
             .certificates
@@ -272,29 +275,28 @@ impl SecurityBuilder {
         Ok(size)
     }
 
-    /// Build the security directory data.
+    /// Build the data of the security directory.
     ///
-    /// Returns the raw bytes to be appended to the file's overlay area.
-    /// After appending, update the Security data directory with:
-    /// - `virtual_address` = file offset where data was appended
-    /// - size = returned size
+    /// Returns the raw bytes to append to the overlay of the file. After you append them,
+    /// update the security data directory entry:
+    /// - `virtual_address`: the file offset of the appended data (not an RVA).
+    /// - size: the length of the returned data.
     ///
     /// # Panics
     ///
-    /// Panics whenever [`Self::try_build`] would return an error.
+    /// Panics if [`Self::try_build`] returns an error.
     #[must_use]
     pub fn build(directory: &SecurityDirectory) -> Vec<u8> {
         Self::try_build(directory)
             .expect("certificate build failed: use try_build() for fallible serialization")
     }
 
-    /// Build the security directory with checked lengths and alignments.
+    /// Build the security directory, with checked lengths and alignments.
     ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
-    /// if any certificate length or the total table size overflows or exceeds
-    /// `u32`.
+    /// if a certificate length or the total table size overflows or is larger than `u32::MAX`.
     pub fn try_build(directory: &SecurityDirectory) -> Result<Vec<u8>> {
         if directory.certificates.is_empty() {
             return Ok(Vec::new());
@@ -304,7 +306,7 @@ impl SecurityBuilder {
         let mut data = Vec::with_capacity(total_size);
 
         for cert in &directory.certificates {
-            // Write length (header + data, unpadded)
+            // Write the length: the header plus the data, without padding.
             let cert_length_u32 = Certificate::HEADER_SIZE
                 .checked_add(cert.data.len())
                 .and_then(|length| u32::try_from(length).ok())
@@ -314,8 +316,8 @@ impl SecurityBuilder {
             data.extend_from_slice(&cert.certificate_type.as_u16().to_le_bytes());
             data.extend_from_slice(&cert.data);
 
-            // Pad to the next 8-byte aligned position. Each certificate starts
-            // at an aligned position, so this aligns the certificate length.
+            // Pad to the next 8-byte boundary. Each certificate starts at an aligned
+            // position, so this aligns the certificate length.
             let padded_end = data
                 .len()
                 .checked_add(7)
@@ -382,10 +384,10 @@ mod tests {
     #[test]
     fn test_builder_roundtrip() {
         let cert = Certificate {
-            length: 0, // Will be calculated by builder
+            length: 0, // The builder calculates the length.
             revision: CertificateRevision::Revision2,
             certificate_type: CertificateType::PkcsSignedData,
-            data: vec![0x30, 0x82, 0x01, 0x00], // Fake ASN.1 header
+            data: vec![0x30, 0x82, 0x01, 0x00], // A fake ASN.1 header.
         };
 
         let dir = SecurityDirectory {
@@ -394,7 +396,7 @@ mod tests {
 
         let data = SecurityBuilder::build(&dir);
 
-        // Parse it back
+        // Parse the data again.
         let parsed = SecurityDirectory::parse(&data).unwrap();
         assert_eq!(parsed.certificates.len(), 1);
         assert_eq!(
@@ -410,12 +412,12 @@ mod tests {
 
     #[test]
     fn test_builder_alignment() {
-        // Certificates must be 8-byte aligned
+        // Each certificate must be aligned to 8 bytes.
         let cert = Certificate {
             length: 0,
             revision: CertificateRevision::Revision2,
             certificate_type: CertificateType::PkcsSignedData,
-            data: vec![1, 2, 3], // 3 bytes data + 8 header = 11, rounds to 16
+            data: vec![1, 2, 3], // 3 data bytes + 8 header bytes = 11, rounded up to 16.
         };
 
         let dir = SecurityDirectory {
@@ -423,8 +425,8 @@ mod tests {
         };
 
         let size = SecurityBuilder::calculate_size(&dir);
-        assert_eq!(size % 8, 0); // Must be 8-byte aligned
-        assert_eq!(size, 16); // 11 rounded up to 16
+        assert_eq!(size % 8, 0); // The size must be aligned to 8 bytes.
+        assert_eq!(size, 16); // 11, rounded up to 16.
     }
 
     #[test]

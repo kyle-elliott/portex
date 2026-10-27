@@ -1,4 +1,4 @@
-//! DOS Header structures and parsing.
+//! DOS header structure and parsing.
 
 use crate::prelude::*;
 use crate::reader::ReadAt;
@@ -9,9 +9,8 @@ pub const DOS_SIGNATURE: u16 = 0x5A4D; // "MZ"
 
 /// DOS Header (`IMAGE_DOS_HEADER`).
 ///
-/// The DOS header is the first structure in a PE file,
-/// located at offset 0. It contains the DOS stub and
-/// a pointer to the PE header.
+/// The DOS header is the first structure in a PE file. It starts at file offset 0.
+/// It holds the DOS stub fields and the file offset of the PE header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 #[expect(
@@ -43,7 +42,7 @@ pub struct DosHeader {
     pub e_ip: u16,
     /// Initial (relative) CS value.
     pub e_cs: u16,
-    /// File address of relocation table.
+    /// File offset of the relocation table.
     pub e_lfarlc: u16,
     /// Overlay number.
     pub e_ovno: u16,
@@ -55,7 +54,7 @@ pub struct DosHeader {
     pub e_oeminfo: u16,
     /// Reserved words.
     pub e_res2: [u16; 10],
-    /// File address of new exe header (PE header offset).
+    /// File offset of the new EXE header (the PE header).
     pub e_lfanew: i32,
 }
 
@@ -163,7 +162,7 @@ impl DosHeader {
         buf
     }
 
-    /// Parse a DOS header from a positional reader at the given offset.
+    /// Parse a DOS header from a positional reader at the file offset `offset`.
     ///
     /// # Errors
     ///

@@ -1,13 +1,15 @@
-//! Load Configuration Directory parsing and building.
+//! Parse and build the load configuration directory.
 //!
-//! The Load Configuration Directory contains security features like
-//! SafeSEH, CFG (Control Flow Guard), and other runtime configuration.
+//! The load configuration directory contains security features, for example SafeSEH and CFG
+//! (Control Flow Guard). It also contains other runtime configuration.
 
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// The structure's Size bounds the available versioned prefix. Zero Size
-/// retains the legacy directory-size convention, not an absent directory.
+/// Return the `Size` field and the versioned prefix of the structure.
+///
+/// The `Size` field limits the available versioned prefix. A `Size` of zero does not mean that
+/// the directory is absent. In this case, the legacy convention applies: use the directory size.
 fn directory_prefix(data: &[u8]) -> Result<(u32, &[u8])> {
     const HEADER_SIZE: usize = core::mem::size_of::<u32>();
     let Some(size_bytes) = data.first_chunk::<HEADER_SIZE>() else {
@@ -29,7 +31,8 @@ fn directory_prefix(data: &[u8]) -> Result<(u32, &[u8])> {
     }
 }
 
-/// A version may omit a whole field, but never supply only part of its value.
+/// Read the field at `offset`. A version can omit a whole field, but it cannot supply only
+/// part of the value.
 fn directory_field<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N]> {
     match data.get(offset..) {
         None | Some([]) => Ok([0; N]),
@@ -39,7 +42,7 @@ fn directory_field<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N]
     }
 }
 
-/// Writes `bytes` at `offset` in `buf` if the complete field fits.
+/// Write `bytes` at `offset` in `buf` if the complete field fits.
 ///
 /// A shorter record omits the whole field. In this case, the function writes nothing.
 fn write_field(buf: &mut [u8], offset: usize, bytes: &[u8]) {
@@ -51,7 +54,7 @@ fn write_field(buf: &mut [u8], offset: usize, bytes: &[u8]) {
     }
 }
 
-/// Makes the zeroed output buffer for a serialized load configuration.
+/// Make the zeroed output buffer for a serialized load configuration.
 ///
 /// The buffer length is the largest of these values:
 ///
@@ -90,13 +93,14 @@ fn output_buffer(
     Ok((buf, encoded_size))
 }
 
-/// `IMAGE_LOAD_CONFIG_DIRECTORY32` (Windows 10+) - 192 bytes
-/// Note: Size varies by Windows version; we parse what's available.
+/// `IMAGE_LOAD_CONFIG_DIRECTORY32` (Windows 10 and later): 192 bytes.
+///
+/// The size changes with the Windows version. The parser reads the fields that are present.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LoadConfigDirectory32 {
-    /// Size of this structure.
+    /// Size of this structure, in bytes.
     pub size: u32,
-    /// Time/date stamp.
+    /// Time and date stamp.
     pub time_date_stamp: u32,
     /// Major version.
     pub major_version: u16,
@@ -112,7 +116,7 @@ pub struct LoadConfigDirectory32 {
     pub de_commit_free_block_threshold: u32,
     /// Size of minimum total memory to de-commit.
     pub de_commit_total_free_threshold: u32,
-    /// VA of lock prefix table (x86 only).
+    /// VA of the lock prefix table (x86 only).
     pub lock_prefix_table: u32,
     /// Maximum allocation size.
     pub maximum_allocation_size: u32,
@@ -126,35 +130,35 @@ pub struct LoadConfigDirectory32 {
     pub csd_version: u16,
     /// Dependent load flags.
     pub dependent_load_flags: u16,
-    /// VA of edit list (reserved).
+    /// VA of the edit list (reserved).
     pub edit_list: u32,
-    /// VA of security cookie.
+    /// VA of the security cookie.
     pub security_cookie: u32,
-    /// VA of SEH handler table.
+    /// VA of the SEH handler table.
     pub se_handler_table: u32,
     /// Number of SEH handlers.
     pub se_handler_count: u32,
-    /// VA of CFG check function pointer.
+    /// VA of the CFG check function pointer.
     pub guard_cf_check_function_pointer: u32,
-    /// VA of CFG dispatch function pointer.
+    /// VA of the CFG dispatch function pointer.
     pub guard_cf_dispatch_function_pointer: u32,
-    /// VA of CFG function table.
+    /// VA of the CFG function table.
     pub guard_cf_function_table: u32,
-    /// Number of entries in CFG function table.
+    /// Number of entries in the CFG function table.
     pub guard_cf_function_count: u32,
     /// CFG flags.
     pub guard_flags: u32,
-    /// Bytes in the versioned structure beyond the fields understood here.
+    /// Bytes of the versioned structure after the fields that this type knows.
     pub trailing_data: Vec<u8>,
 }
 
 impl LoadConfigDirectory32 {
-    /// Default emitted size before optional SafeSEH and CFG fields.
+    /// Default output size, without the optional SafeSEH and CFG fields.
     pub const MIN_SIZE: usize = 64;
-    /// Size through `GuardFlags`; later versioned fields are preserved opaquely.
+    /// Size up to and including `GuardFlags`. Later versioned fields stay as opaque bytes.
     pub const SIZE_WITH_CFG: usize = 92;
 
-    /// Parses a whole-field versioned prefix, including legacy short records.
+    /// Parse a versioned prefix of whole fields. Legacy short records are also valid.
     ///
     /// # Errors
     ///
@@ -195,24 +199,24 @@ impl LoadConfigDirectory32 {
         })
     }
 
-    /// Serialize to bytes (up to the size field value).
+    /// Serialize to bytes, up to the value of the `Size` field.
     ///
     /// # Panics
     ///
-    /// Panics if the serialized size exceeds `u32` or the allocation fails; use
-    /// [`Self::try_to_bytes`].
+    /// Panics if the serialized size exceeds `u32` or if the allocation fails. For fallible
+    /// serialization, use [`Self::try_to_bytes`].
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("load-config build failed: use try_to_bytes()")
     }
 
-    /// Serialize with checked versioned/trailing size arithmetic.
+    /// Serialize to bytes, with checked arithmetic for the versioned size and the trailing size.
     ///
     /// # Errors
     ///
-    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32`
-    /// or the allocation fails.
+    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32` or if the
+    /// allocation fails.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         let known_size = if self.guard_flags != 0 {
             Self::SIZE_WITH_CFG
@@ -235,8 +239,8 @@ impl LoadConfigDirectory32 {
             Self::SIZE_WITH_CFG,
             &self.trailing_data,
         )?;
-        // The buffer holds at least `MIN_SIZE` bytes. A later field is written
-        // only if the buffer holds the complete field.
+        // The buffer holds at least `MIN_SIZE` bytes. Write a later field only if the buffer
+        // holds the complete field.
         let mut put = |offset, bytes: &[u8]| write_field(&mut buf, offset, bytes);
         put(0, &encoded_size.to_le_bytes());
         put(4, &self.time_date_stamp.to_le_bytes());
@@ -279,12 +283,12 @@ impl LoadConfigDirectory32 {
     }
 }
 
-/// `IMAGE_LOAD_CONFIG_DIRECTORY64` (Windows 10+)
+/// `IMAGE_LOAD_CONFIG_DIRECTORY64` (Windows 10 and later).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LoadConfigDirectory64 {
-    /// Size of this structure.
+    /// Size of this structure, in bytes.
     pub size: u32,
-    /// Time/date stamp.
+    /// Time and date stamp.
     pub time_date_stamp: u32,
     /// Major version.
     pub major_version: u16,
@@ -300,7 +304,7 @@ pub struct LoadConfigDirectory64 {
     pub de_commit_free_block_threshold: u64,
     /// Size of minimum total memory to de-commit.
     pub de_commit_total_free_threshold: u64,
-    /// VA of lock prefix table (x86 only).
+    /// VA of the lock prefix table (x86 only).
     pub lock_prefix_table: u64,
     /// Maximum allocation size.
     pub maximum_allocation_size: u64,
@@ -314,35 +318,35 @@ pub struct LoadConfigDirectory64 {
     pub csd_version: u16,
     /// Dependent load flags.
     pub dependent_load_flags: u16,
-    /// VA of edit list (reserved).
+    /// VA of the edit list (reserved).
     pub edit_list: u64,
-    /// VA of security cookie.
+    /// VA of the security cookie.
     pub security_cookie: u64,
-    /// VA of SEH handler table (unused on x64).
+    /// VA of the SEH handler table (not used on x64).
     pub se_handler_table: u64,
-    /// Number of SEH handlers (unused on x64).
+    /// Number of SEH handlers (not used on x64).
     pub se_handler_count: u64,
-    /// VA of CFG check function pointer.
+    /// VA of the CFG check function pointer.
     pub guard_cf_check_function_pointer: u64,
-    /// VA of CFG dispatch function pointer.
+    /// VA of the CFG dispatch function pointer.
     pub guard_cf_dispatch_function_pointer: u64,
-    /// VA of CFG function table.
+    /// VA of the CFG function table.
     pub guard_cf_function_table: u64,
-    /// Number of entries in CFG function table.
+    /// Number of entries in the CFG function table.
     pub guard_cf_function_count: u64,
     /// CFG flags.
     pub guard_flags: u32,
-    /// Bytes in the versioned structure beyond the fields understood here.
+    /// Bytes of the versioned structure after the fields that this type knows.
     pub trailing_data: Vec<u8>,
 }
 
 impl LoadConfigDirectory64 {
-    /// Default emitted size before optional CFG fields.
+    /// Default output size, without the optional CFG fields.
     pub const MIN_SIZE: usize = 112;
-    /// Size through `GuardFlags`; later versioned fields are preserved opaquely.
+    /// Size up to and including `GuardFlags`. Later versioned fields stay as opaque bytes.
     pub const SIZE_WITH_CFG: usize = 148;
 
-    /// Parses a whole-field versioned prefix, including legacy short records.
+    /// Parse a versioned prefix of whole fields. Legacy short records are also valid.
     ///
     /// # Errors
     ///
@@ -384,24 +388,24 @@ impl LoadConfigDirectory64 {
         })
     }
 
-    /// Serialize to bytes (up to the size field value).
+    /// Serialize to bytes, up to the value of the `Size` field.
     ///
     /// # Panics
     ///
-    /// Panics if the serialized size exceeds `u32` or the allocation fails; use
-    /// [`Self::try_to_bytes`].
+    /// Panics if the serialized size exceeds `u32` or if the allocation fails. For fallible
+    /// serialization, use [`Self::try_to_bytes`].
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("load-config build failed: use try_to_bytes()")
     }
 
-    /// Serialize with checked versioned/trailing size arithmetic.
+    /// Serialize to bytes, with checked arithmetic for the versioned size and the trailing size.
     ///
     /// # Errors
     ///
-    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32`
-    /// or the allocation fails.
+    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32` or if the
+    /// allocation fails.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         let known_size = if self.guard_flags != 0 {
             Self::SIZE_WITH_CFG
@@ -422,8 +426,8 @@ impl LoadConfigDirectory64 {
             Self::SIZE_WITH_CFG,
             &self.trailing_data,
         )?;
-        // The buffer holds at least `MIN_SIZE` bytes. A later field is written
-        // only if the buffer holds the complete field.
+        // The buffer holds at least `MIN_SIZE` bytes. Write a later field only if the buffer
+        // holds the complete field.
         let mut put = |offset, bytes: &[u8]| write_field(&mut buf, offset, bytes);
         put(0, &encoded_size.to_le_bytes());
         put(4, &self.time_date_stamp.to_le_bytes());
@@ -460,7 +464,7 @@ impl LoadConfigDirectory64 {
     }
 }
 
-/// Load Config Directory (either 32 or 64-bit).
+/// Load configuration directory, in the 32-bit or the 64-bit layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadConfigDirectory {
     /// PE32 `IMAGE_LOAD_CONFIG_DIRECTORY32`.
@@ -470,7 +474,7 @@ pub enum LoadConfigDirectory {
 }
 
 impl LoadConfigDirectory {
-    /// Parses the 32- or 64-bit layout selected by `is_64bit`.
+    /// Parse the 32-bit or the 64-bit layout. `is_64bit` selects the layout.
     ///
     /// # Errors
     ///
@@ -485,24 +489,24 @@ impl LoadConfigDirectory {
         }
     }
 
-    /// Serialize to bytes (up to the size field value).
+    /// Serialize to bytes, up to the value of the `Size` field.
     ///
     /// # Panics
     ///
-    /// Panics if the serialized size exceeds `u32` or the allocation fails; use
-    /// [`Self::try_to_bytes`].
+    /// Panics if the serialized size exceeds `u32` or if the allocation fails. For fallible
+    /// serialization, use [`Self::try_to_bytes`].
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("load-config build failed: use try_to_bytes()")
     }
 
-    /// Serialize with checked versioned/trailing size arithmetic.
+    /// Serialize to bytes, with checked arithmetic for the versioned size and the trailing size.
     ///
     /// # Errors
     ///
-    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32`
-    /// or the allocation fails.
+    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32` or if the
+    /// allocation fails.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         match self {
             Self::Config32(c) => c.try_to_bytes(),
@@ -529,7 +533,7 @@ impl LoadConfigDirectory {
     }
 }
 
-/// `GuardFlags` values (`IMAGE_GUARD_*`) for the load-config directory.
+/// `GuardFlags` values (`IMAGE_GUARD_*`) for the load configuration directory.
 pub mod guard_flags {
     /// `IMAGE_GUARD_CF_INSTRUMENTED`: module performs CFG checks.
     pub const CF_INSTRUMENTED: u32 = 0x0000_0100;
@@ -543,7 +547,8 @@ pub mod guard_flags {
     pub const PROTECT_DELAYLOAD_IAT: u32 = 0x0000_1000;
     /// `IMAGE_GUARD_DELAYLOAD_IAT_IN_ITS_OWN_SECTION`: delay-load IAT is in its own section.
     pub const DELAYLOAD_IAT_IN_ITS_OWN_SECTION: u32 = 0x0000_2000;
-    /// `IMAGE_GUARD_CF_EXPORT_SUPPRESSION_INFO_PRESENT`: module contains suppressed-export information.
+    /// `IMAGE_GUARD_CF_EXPORT_SUPPRESSION_INFO_PRESENT`: module contains suppressed-export
+    /// information.
     pub const CF_EXPORT_SUPPRESSION_INFO_PRESENT: u32 = 0x0000_4000;
     /// `IMAGE_GUARD_CF_ENABLE_EXPORT_SUPPRESSION`: module enables suppression of exports.
     pub const CF_ENABLE_EXPORT_SUPPRESSION: u32 = 0x0000_8000;
@@ -576,10 +581,10 @@ pub struct CfgSettings {
     pub flags: u32,
 }
 
-/// Builder for Load Configuration directories.
+/// Builder for load configuration directories.
 ///
-/// `LoadConfig` directories contain security features like `SafeSEH` and CFG.
-/// This builder simplifies creating and modifying these complex structures.
+/// A load configuration directory contains security features, for example `SafeSEH` and CFG.
+/// This builder makes it easier to create and change these complex structures.
 ///
 /// # Example
 ///
@@ -595,39 +600,38 @@ pub struct CfgSettings {
 /// ```
 #[derive(Debug, Clone)]
 pub struct LoadConfigBuilder {
-    /// Whether this is a 64-bit PE.
+    /// `true` for a 64-bit PE.
     is_64bit: bool,
 }
 
 impl LoadConfigBuilder {
-    /// Create a new `LoadConfig` builder.
+    /// Create a new load configuration builder.
     #[must_use]
     pub fn new(is_64bit: bool) -> Self {
         Self { is_64bit }
     }
 
-    /// Build a basic `LoadConfig` with just a security cookie.
+    /// Build a basic load configuration directory with only a security cookie.
     ///
-    /// # Arguments
-    /// * `security_cookie_va` - Virtual address of the security cookie
+    /// `security_cookie_va` is the VA of the security cookie.
     ///
-    /// Returns (data, size)
+    /// Returns the data and its size as `(data, size)`.
     ///
     /// # Panics
     ///
-    /// Panics if a PE32 builder is given a cookie VA that exceeds `u32`; use
-    /// [`Self::try_build_with_cookie`] for fallible building.
+    /// Panics if the builder is for PE32 and the cookie VA exceeds `u32`. For fallible
+    /// building, use [`Self::try_build_with_cookie`].
     #[must_use]
     pub fn build_with_cookie(&self, security_cookie_va: u64) -> (Vec<u8>, u32) {
         self.try_build_with_cookie(security_cookie_va)
             .expect("load-config build failed: use try_build_with_cookie()")
     }
 
-    /// Build a basic load-config directory without truncating PE32 values.
+    /// Build a basic load configuration directory. PE32 values are not truncated.
     ///
     /// # Errors
     ///
-    /// Returns an `InvalidDataDirectory` error if this is a PE32 builder and
+    /// Returns an `InvalidDataDirectory` error if the builder is for PE32 and
     /// `security_cookie_va` does not fit in `u32`.
     pub fn try_build_with_cookie(&self, security_cookie_va: u64) -> Result<(Vec<u8>, u32)> {
         if self.is_64bit {
@@ -649,26 +653,30 @@ impl LoadConfigBuilder {
 
     /// Build from an existing `LoadConfigDirectory`.
     ///
-    /// Returns (data, size)
+    /// Returns the data and its size as `(data, size)`.
     ///
     /// # Panics
     ///
-    /// Panics if the directory bitness does not match the builder, its size
-    /// exceeds `u32` or the allocation fails; use [`Self::try_build`] for
-    /// fallible building.
+    /// Panics in these conditions:
+    /// - The bitness of the directory is not the bitness of the builder.
+    /// - The size of the directory exceeds `u32`.
+    /// - The allocation fails.
+    ///
+    /// For fallible building, use [`Self::try_build`].
     #[must_use]
     pub fn build(&self, config: &LoadConfigDirectory) -> (Vec<u8>, u32) {
         self.try_build(config)
             .expect("load-config build failed: use try_build()")
     }
 
-    /// Build from an existing directory, checking the configured PE width.
+    /// Build from an existing directory. The directory must have the PE width of the builder.
     ///
     /// # Errors
     ///
-    /// Returns an `InvalidDataDirectory` error if the directory bitness does not
-    /// match the builder, the serialized size exceeds `u32` or the allocation
-    /// fails.
+    /// Returns an `InvalidDataDirectory` error in these conditions:
+    /// - The bitness of the directory is not the bitness of the builder.
+    /// - The serialized size exceeds `u32`.
+    /// - The allocation fails.
     pub fn try_build(&self, config: &LoadConfigDirectory) -> Result<(Vec<u8>, u32)> {
         let matches_width = matches!(
             (self.is_64bit, config),
@@ -682,26 +690,26 @@ impl LoadConfigBuilder {
         Self::serialize(config)
     }
 
-    /// Build a `LoadConfig` with CFG (Control Flow Guard) settings.
+    /// Build a load configuration directory with CFG (Control Flow Guard) settings.
     ///
-    /// Returns (data, size)
+    /// Returns the data and its size as `(data, size)`.
     ///
     /// # Panics
     ///
-    /// Panics if a PE32 builder is given a value in `cfg` that exceeds `u32`;
-    /// use [`Self::try_build_with_cfg`] for fallible building.
+    /// Panics if the builder is for PE32 and a value in `cfg` exceeds `u32`. For fallible
+    /// building, use [`Self::try_build_with_cfg`].
     #[must_use]
     pub fn build_with_cfg(&self, cfg: &CfgSettings) -> (Vec<u8>, u32) {
         self.try_build_with_cfg(cfg)
             .expect("load-config build failed: use try_build_with_cfg()")
     }
 
-    /// Build a CFG-enabled load-config directory with checked PE32 values.
+    /// Build a load configuration directory with CFG enabled. PE32 values are checked.
     ///
     /// # Errors
     ///
-    /// Returns an `InvalidDataDirectory` error if this is a PE32 builder and a
-    /// VA or the function count in `cfg` does not fit in `u32`.
+    /// Returns an `InvalidDataDirectory` error if the builder is for PE32 and a VA or the
+    /// function count in `cfg` does not fit in `u32`.
     pub fn try_build_with_cfg(&self, cfg: &CfgSettings) -> Result<(Vec<u8>, u32)> {
         if self.is_64bit {
             let config = LoadConfigDirectory64 {
@@ -760,7 +768,7 @@ impl LoadConfigBuilder {
         })
     }
 
-    /// Calculate the size needed for `LoadConfig` data.
+    /// Calculate the size of the load configuration data.
     #[must_use]
     pub fn size(&self, with_cfg: bool) -> usize {
         if self.is_64bit {
@@ -929,8 +937,8 @@ mod tests {
         assert_eq!(parsed64.size, 200);
     }
 
-    /// On a 32-bit target, a `Size` of `u32::MAX` exceeds `isize::MAX`, so
-    /// `vec!` panicked with a capacity overflow before the fix.
+    /// On a 32-bit target, a `Size` of `u32::MAX` exceeds `isize::MAX`. Before the fix,
+    /// `vec!` panicked with a capacity overflow.
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn serialization_reports_unallocatable_size() {

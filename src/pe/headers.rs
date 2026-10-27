@@ -15,20 +15,23 @@ use std::path::Path;
 impl PeHeaders {
     /// Read PE headers from any [`ReadAt`] implementation.
     ///
-    /// `base_offset` is the source offset of the DOS header.
+    /// `base_offset` is the source offset of the DOS header (`IMAGE_DOS_HEADER`).
     ///
     /// # Errors
     ///
-    /// Returns an error if the DOS header, PE signature, COFF header, optional
-    /// header, or section table cannot be read or is invalid, if `e_lfanew` is
-    /// negative or points inside the DOS header, if a header offset overflows,
-    /// or if `NumberOfSections` exceeds [`MAX_NUMBER_OF_SECTIONS`].
+    /// Returns an error in these conditions:
+    ///
+    /// - The DOS header, PE signature, COFF header, optional header, or section table cannot
+    ///   be read or is invalid.
+    /// - `e_lfanew` is negative or points into the DOS header.
+    /// - The calculation of a header offset overflows.
+    /// - `NumberOfSections` is more than [`MAX_NUMBER_OF_SECTIONS`].
     #[must_use = "parsing returns PE headers that should be used"]
     pub fn read_from<R: ReadAt>(reader: &R, base_offset: u64) -> Result<Self> {
-        // Parse DOS header
+        // Parse the DOS header.
         let dos_header = DosHeader::read_from(reader, base_offset)?;
 
-        // Get PE header offset
+        // Get the offset of the PE header.
         let relative_pe_offset = u64::try_from(dos_header.e_lfanew)
             .map_err(|_| Error::invalid_section("e_lfanew is negative"))?;
         if relative_pe_offset < DosHeader::SIZE as u64 {
@@ -40,10 +43,10 @@ impl PeHeaders {
             .checked_add(relative_pe_offset)
             .ok_or_else(|| Error::invalid_section("PE header offset overflow"))?;
 
-        // Verify PE signature
+        // Check the PE signature.
         verify_pe_signature(reader, pe_offset)?;
 
-        // Parse COFF header (4 bytes after PE signature)
+        // Parse the COFF header. It starts 4 bytes after the PE signature.
         let coff_offset = pe_offset
             .checked_add(4)
             .ok_or_else(|| Error::invalid_section("COFF header offset overflow"))?;
@@ -56,7 +59,7 @@ impl PeHeaders {
             )));
         }
 
-        // Parse optional header
+        // Parse the optional header.
         let optional_offset = coff_offset
             .checked_add(CoffHeader::SIZE as u64)
             .ok_or_else(|| Error::invalid_section("optional-header offset overflow"))?;
@@ -66,7 +69,7 @@ impl PeHeaders {
             usize::from(coff_header.size_of_optional_header),
         )?;
 
-        // Parse section headers
+        // Parse the section headers.
         let sections_offset = optional_offset
             .checked_add(u64::from(coff_header.size_of_optional_header))
             .ok_or_else(|| Error::invalid_section("section-table offset overflow"))?;
@@ -81,12 +84,12 @@ impl PeHeaders {
         })
     }
 
-    /// Read headers from a file on disk.
+    /// Read the headers from a file on disk.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be opened or read, or for any
-    /// condition listed on [`Self::read_from`].
+    /// Returns an error if the file cannot be opened or read. Also returns an error for each
+    /// condition that [`Self::read_from`] lists.
     #[cfg(feature = "std")]
     #[must_use = "loading returns PE headers that should be used"]
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -94,39 +97,40 @@ impl PeHeaders {
         Self::read_from(&reader, 0)
     }
 
-    /// Read headers from a byte slice.
+    /// Read the headers from a byte slice.
     ///
     /// # Errors
     ///
-    /// Returns an error for any condition listed on [`Self::read_from`].
+    /// Returns an error for each condition that [`Self::read_from`] lists.
     #[must_use = "parsing returns PE headers that should be used"]
     pub fn from_slice(data: &[u8]) -> Result<Self> {
         let reader = SliceReader::new(data);
         Self::read_from(&reader, 0)
     }
 
-    /// Check if this is a 64-bit PE.
+    /// Return `true` if this is a 64-bit (PE32+) image.
     #[must_use]
     pub fn is_64bit(&self) -> bool {
         self.optional_header.is_pe32plus()
     }
 
-    /// Check if this is a DLL.
+    /// Return `true` if this image is a DLL.
     #[must_use]
     pub fn is_dll(&self) -> bool {
         self.coff_header.is_dll()
     }
 
-    /// Get a section header by name.
+    /// Return the section header (`IMAGE_SECTION_HEADER`) with the given name.
     #[must_use]
     pub fn section_by_name(&self, name: &str) -> Option<&SectionHeader> {
         self.section_headers.iter().find(|s| s.name_str() == name)
     }
 
-    /// Convert an RVA to an image-relative source offset for the requested layout.
+    /// Convert an RVA to a source offset for the given layout.
     ///
-    /// When [`Self::read_from`] was called with a nonzero `base_offset`, add that
-    /// base to the returned value before reading from the original source.
+    /// The offset is relative to the start of the image. If you called [`Self::read_from`]
+    /// with a nonzero `base_offset`, add that base to the offset before you read from the
+    /// original source.
     #[must_use]
     pub fn rva_to_source_offset(&self, rva: u32, layout: SourceLayout) -> Option<u32> {
         if rva >= self.optional_header.size_of_image() {
@@ -146,19 +150,19 @@ impl PeHeaders {
         }
     }
 
-    /// Convert an RVA to a raw-file offset.
+    /// Convert an RVA to a file offset in the raw file.
     #[must_use]
     pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
         self.rva_to_source_offset(rva, SourceLayout::File)
     }
 
-    /// Get the entry point RVA.
+    /// Return the RVA of the entry point.
     #[must_use]
     pub fn entry_point(&self) -> u32 {
         self.optional_header.address_of_entry_point()
     }
 
-    /// Get the image base.
+    /// Return the preferred image base (a VA) from the optional header.
     #[must_use]
     pub fn image_base(&self) -> u64 {
         self.optional_header.image_base()
@@ -182,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_parse_buffer_too_small() {
-        let data = vec![0x4D, 0x5A]; // Just MZ
+        let data = vec![0x4D, 0x5A]; // Only the "MZ" signature.
         let result = PeImage::parse(&data);
         assert!(matches!(
             result,

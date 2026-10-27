@@ -1,56 +1,60 @@
 //! # Portex
 //!
-//! A `no_std`-friendly PE (Portable Executable) image reader/writer library.
+//! A `no_std`-friendly library that reads and writes PE (Portable Executable) images.
 //!
-//! This library provides types and utilities for parsing and manipulating
-//! Windows PE executable images. It distinguishes raw files from loader-mapped
-//! memory because their RVA-to-source translations are different.
+//! This library supplies types and utilities to parse and change Windows PE executable
+//! images. It keeps raw files and loader-mapped images separate, because each layout
+//! translates an RVA to a source offset in a different way.
 //!
 //! ## Features
 //!
-//! - **Multiple loading modes**: Load raw files or loader-mapped images from
-//!   memory slices, or implement the `ReadAt` trait for custom sources (e.g.,
-//!   remote process memory).
-//! - **Partial loading**: Use `PeHeaders` to parse just headers without loading
-//!   the entire file - ideal for remote process scenarios.
-//! - **Self-contained**: All PE structures defined from scratch, no Windows SDK.
-//! - **`no_std` mode**: Disable the `std` feature for `no_std + alloc` builds.
-//!   The full PE API (parsers, builders, layout, validation, in-memory readers)
-//!   stays available. Only entry points that genuinely need `std` —
-//!   `PeImage::from_file`, `PeImage::write_to_file`, `PeHeaders::from_file`, the
-//!   `FileReader`, and the `std::error::Error` / `From<io::Error>` impls —
-//!   compile out.
+//! - **Multiple loading modes**: Load raw files or loader-mapped images from memory
+//!   slices. For a custom source (for example, remote process memory), implement the
+//!   `ReadAt` trait.
+//! - **Partial loading**: Use `PeHeaders` to parse only the headers. This does not load
+//!   the full file, which helps when you read a remote process.
+//! - **Self-contained**: The crate defines all PE structures itself. It does not use the
+//!   Windows SDK.
+//! - **`no_std` mode**: Disable the `std` feature for `no_std + alloc` builds. The full PE
+//!   API (parsers, builders, layout, validation and in-memory readers) stays available.
+//!   Only these items need `std`, and they compile out:
+//!   - `PeImage::from_file`, `PeImage::write_to_file`, `PeFile::from_file`,
+//!     `PeFile::write_to_file` and `PeHeaders::from_file`.
+//!   - `FileReader` and `SeekReader::open`.
+//!   - The `std::error::Error` and `From<io::Error>` impls.
 //!
 //! ## Architecture
 //!
 //! ### Parsing Patterns
 //!
-//! The library uses a consistent two-tier parsing pattern:
+//! The library uses the same two-tier parsing pattern for all structures:
 //!
-//! 1. **Raw structures** use `parse(&[u8])` for parsing contiguous binary data:
+//! 1. **Raw structures** use `parse(&[u8])` to parse contiguous binary data:
 //!    - `ImportDescriptor::parse(&[u8])`, `TlsDirectory::parse(&[u8], is_64bit)`
-//!    - These parse a single fixed-size structure from a byte slice
+//!    - Each call parses one fixed-size structure from a byte slice.
 //!
-//! 2. **High-level tables** use `parse(rva, ..., read_fn)` for following RVA pointers:
-//!    - `ImportTable::parse(rva, is_64bit, read_fn)`, `ResourceDirectory::parse(rva, size, read_fn)`
-//!    - The `read_fn` closure enables reading from multiple locations (RVA resolution)
+//! 2. **High-level tables** use `parse(rva, ..., read_fn)` to follow RVA pointers:
+//!    - `ImportTable::parse(rva, is_64bit, read_fn)`
+//!    - `ResourceDirectory::parse(rva, size, read_fn)`
+//!    - The `read_fn` closure reads from many locations, because it resolves each RVA.
 //!
 //! ### Builder Pattern
 //!
-//! All builders (`ImportTableBuilder`, `ExportTableBuilder`, `ResourceBuilder`, etc.) use
-//! immutable `build(&self)` methods that return serialized bytes without mutating the builder.
+//! Each directory builder (`ImportTableBuilder`, `ExportTableBuilder`, `ResourceBuilder` and
+//! others) serializes a table into bytes. Each `build` method panics on invalid input. Use the
+//! matching `try_build` method to get a `Result`.
 //!
 //! ## Example
 //!
 //! ```no_run
 //! use portex::{PeFile, PeHeaders};
 //!
-//! // PeFile preserves certificates, overlays, and raw file gaps.
+//! // PeFile keeps certificates, overlays and raw file gaps.
 //! # let bytes: &[u8] = &[];
 //! let file = PeFile::parse(bytes).unwrap();
 //! println!("64-bit: {}", file.image().is_64bit());
 //!
-//! // Or just load headers (more efficient for large files)
+//! // Or load only the headers (this is faster for large files).
 //! let headers = PeHeaders::from_slice(bytes).unwrap();
 //! println!("Entry point: {:#x}", headers.entry_point());
 //! ```
@@ -61,12 +65,13 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-/// Internal prelude — every source file does `use crate::prelude::*;` to pull
-/// in the `alloc` types and macros the codebase relies on. Re-exporting them
-/// here keeps each module file's import header to a single line and centralises
-/// the `no_std`-aware imports so individual modules don't repeat `#[cfg]`
-/// blocks. The items are all `alloc` re-exports, so under the `std` feature
-/// they shadow identical-typed prelude items harmlessly.
+/// Internal prelude. Each source file uses `use crate::prelude::*;` to get the `alloc`
+/// types and macros that the code needs.
+///
+/// With this prelude, the import header of each module is one line. It also keeps the
+/// `no_std` imports in one location, so modules do not repeat `#[cfg]` blocks. All items
+/// are `alloc` re-exports. Under the `std` feature, they shadow prelude items of the same
+/// type, and this causes no problem.
 pub(crate) mod prelude {
     pub use alloc::borrow::Cow;
     pub use alloc::collections::{BTreeMap, BTreeSet};
@@ -156,7 +161,7 @@ pub use security::{
 pub use tls::{TlsBuilder, TlsDirectory, TlsDirectory32, TlsDirectory64, TlsInfo};
 pub use validation::{ValidationCode, ValidationIssue, ValidationLevel, ValidationResult};
 
-// Compiles the README's Rust examples as doctests so they track the API. The
+// Compile the Rust examples in the README as doctests, so that they follow the API. The
 // quick start uses the `std` file helpers.
 #[cfg(all(doctest, feature = "std"))]
 #[doc = include_str!("../README.md")]

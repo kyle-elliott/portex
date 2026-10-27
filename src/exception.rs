@@ -1,7 +1,7 @@
-//! Exception directory (.pdata) parsing and building.
+//! Parse and build the exception directory (`.pdata`).
 //!
-//! The exception directory contains runtime function entries used for
-//! structured exception handling (SEH) and stack unwinding on x64.
+//! The exception directory contains runtime function entries. On x64, structured exception
+//! handling (SEH) and stack unwinding use these entries.
 
 mod arm;
 mod builder;

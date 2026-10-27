@@ -4,25 +4,31 @@ use super::{
 };
 use crate::prelude::*;
 
-/// Maximum number of directory entries visited across all tree levels.
+/// Maximum number of directory entries that the parser visits, for all tree levels together.
 const MAX_VISITED_ENTRIES: usize = 262_144;
 
 impl ResourceDirectory {
-    /// Parse resource directory from PE data.
+    /// Parse the resource directory from PE data.
     ///
-    /// `read_at_rva(rva, len)` must return `len` bytes at `rva`, or `None` if
-    /// the range is unreadable. Resource payloads are not loaded.
+    /// `rsrc_rva` is the RVA of the resource directory, and `rsrc_size` is its size in bytes.
+    /// `read_at_rva(rva, len)` must return `len` bytes at the RVA `rva`. It must return `None`
+    /// if it cannot read the range. This function does not load the resource payloads.
     ///
     /// # Errors
     ///
-    /// Returns an invalid-RVA error if a directory structure cannot be read,
-    /// and an invalid-data-directory error if `rsrc_size` is smaller than an
-    /// `IMAGE_RESOURCE_DIRECTORY`, the tree exceeds 262,144 entries, any
-    /// structure or name lies outside `rsrc_size`, entries are not ordered
-    /// named-first, a type or name entry does not point to a subdirectory, a
-    /// language entry is named or points to a subdirectory, a numeric ID has
-    /// nonzero high bits, a name is invalid UTF-16, a data entry's reserved
-    /// field is nonzero, or a type/name/language triple is duplicated.
+    /// Returns an invalid-RVA error if a directory structure cannot be read.
+    ///
+    /// Returns an invalid-data-directory error if one of these conditions is true:
+    /// - `rsrc_size` is smaller than an `IMAGE_RESOURCE_DIRECTORY`.
+    /// - The tree has more than 262,144 entries.
+    /// - A structure or a name is outside `rsrc_size`.
+    /// - The named entries do not come before the ID entries.
+    /// - A type entry or a name entry does not point to a subdirectory.
+    /// - A language entry is named or points to a subdirectory.
+    /// - A numeric ID has high bits that are not zero.
+    /// - A name is not valid UTF-16.
+    /// - The reserved field of a data entry is not zero.
+    /// - Two entries have the same type, name and language.
     pub fn parse<F>(rsrc_rva: u32, rsrc_size: u32, read_at_rva: F) -> Result<Self>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -48,9 +54,9 @@ impl ResourceDirectory {
         })
     }
 
-    /// Parse resource directory from PE data, including resource data.
+    /// Parse the resource directory from PE data, and load the resource data.
     ///
-    /// Unlike `parse()`, this method also loads the actual resource data into each `Resource`.
+    /// Unlike `parse()`, this function also loads the resource data into each `Resource`.
     ///
     /// # Errors
     ///
@@ -64,9 +70,9 @@ impl ResourceDirectory {
         Ok(dir)
     }
 
-    /// Load the actual data for all resources that don't have it yet.
+    /// Load the data for each resource that does not have data yet.
     ///
-    /// This is useful if you parsed with `parse()` and later want to load specific resource data.
+    /// Use this function after `parse()` to load the resource data later.
     pub fn load_data<F>(&mut self, read_at_rva: F)
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -78,14 +84,15 @@ impl ResourceDirectory {
         }
     }
 
-    /// Strictly load all resource payloads, returning an error for the first
-    /// unreadable range.
+    /// Load all resource payloads. Stop at the first range that cannot be read.
+    ///
+    /// `read_at_rva(rva, len)` reads `len` bytes at the RVA `rva`.
     ///
     /// # Errors
     ///
-    /// Returns an invalid-RVA error if `read_at_rva` cannot read a payload, or
-    /// an invalid-data-directory error if it returns a different length than
-    /// the data entry's size.
+    /// Returns an invalid-RVA error if `read_at_rva` cannot read a payload. Returns an
+    /// invalid-data-directory error if `read_at_rva` returns a length that is not equal to the
+    /// size in the data entry.
     pub fn try_load_data<F>(&mut self, read_at_rva: F) -> Result<()>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -103,19 +110,19 @@ impl ResourceDirectory {
         Ok(())
     }
 
-    /// Find resources by type.
+    /// Find all resources of a resource type.
     #[must_use]
     pub fn find_by_type(&self, rt: ResourceType) -> Vec<&Resource> {
         self.resources.iter().filter(|r| r.is_type(rt)).collect()
     }
 
-    /// Get the manifest resource (if any).
+    /// Get the first manifest resource, if there is one.
     #[must_use]
     pub fn manifest(&self) -> Option<&Resource> {
         self.find_by_type(ResourceType::Manifest).first().copied()
     }
 
-    /// Get version info resource (if any).
+    /// Get the first version information resource, if there is one.
     #[must_use]
     pub fn version_info(&self) -> Option<&Resource> {
         self.find_by_type(ResourceType::Version).first().copied()
@@ -127,13 +134,13 @@ impl ResourceDirectory {
         self.find_by_type(ResourceType::Icon)
     }
 
-    /// Get icon group resources.
+    /// Get all icon group resources.
     #[must_use]
     pub fn icon_groups(&self) -> Vec<&Resource> {
         self.find_by_type(ResourceType::GroupIcon)
     }
 
-    /// Check if empty.
+    /// Check if the directory has no resources.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.resources.is_empty()
@@ -146,7 +153,7 @@ impl ResourceDirectory {
     }
 }
 
-/// Level of the three-level resource tree.
+/// A level of the resource tree. The tree has three levels.
 #[derive(Debug, Clone, Copy)]
 enum TreeLevel {
     Type,
@@ -155,7 +162,7 @@ enum TreeLevel {
 }
 
 impl TreeLevel {
-    /// Context used for range errors on this level's directory entries.
+    /// Context text for range errors on the directory entries of this level.
     fn entry_context(self) -> &'static str {
         match self {
             Self::Type => "resource type entry",
@@ -164,7 +171,7 @@ impl TreeLevel {
         }
     }
 
-    /// Context used for named-first ordering errors on this level.
+    /// Context text for errors when the named entries of this level do not come first.
     fn order_context(self) -> &'static str {
         match self {
             Self::Type => "resource type",
@@ -174,7 +181,8 @@ impl TreeLevel {
     }
 }
 
-/// Bounded walk over the resource tree, collecting leaf resources.
+/// A walk over the resource tree, with a limit on the number of entries. The walk collects
+/// the leaf resources.
 struct ResourceTreeWalker<'a, F> {
     rsrc_rva: u32,
     rsrc_size: u32,
@@ -307,8 +315,10 @@ where
         ResourceDirectoryHeader::parse(&data)
     }
 
-    /// Read entry `index` of the directory at `dir_rva`, enforcing the visited
-    /// entry limit, the directory bounds, and named-first ordering.
+    /// Read entry `index` of the directory at the RVA `dir_rva`.
+    ///
+    /// This function enforces the limit on visited entries, the directory bounds and the
+    /// order of the entries (named entries first).
     fn read_entry(
         &mut self,
         dir_rva: u32,
@@ -363,7 +373,7 @@ where
             2,
             "resource name length",
         )?;
-        // Resource names are length-prefixed Unicode strings
+        // A resource name is a Unicode string with a length prefix.
         let len_data = crate::parse_utils::read_exact_rva(
             self.read_at_rva,
             name_offset,
@@ -392,7 +402,7 @@ where
             "resource name",
         )?;
 
-        // Convert UTF-16LE to String
+        // Convert the UTF-16LE units to a `String`.
         let chars: Vec<u16> = name_data
             .as_chunks::<2>()
             .0

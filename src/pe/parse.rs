@@ -9,7 +9,7 @@ use crate::{Error, Result};
 use std::path::Path;
 
 impl PeImage {
-    /// Create a new PE builder for constructing PEs from scratch.
+    /// Create a [`PeBuilder`](crate::PeBuilder) that builds a new PE image from scratch.
     ///
     /// # Example
     ///
@@ -28,10 +28,10 @@ impl PeImage {
         crate::builder::PeBuilder::new()
     }
 
-    /// Parse raw PE file bytes from a byte slice.
+    /// Parse the bytes of a PE file from a byte slice.
     ///
-    /// This expects file layout even though the bytes themselves are already in
-    /// memory. Use [`Self::parse_mapped`] for an image laid out by a PE loader.
+    /// The bytes must use the file layout, although they are in memory. For an image that a PE
+    /// loader mapped, use [`Self::parse_mapped`].
     ///
     /// # Errors
     ///
@@ -43,8 +43,8 @@ impl PeImage {
 
     /// Parse a loader-mapped PE image from a byte slice.
     ///
-    /// The slice must begin at the image base. Section payloads are read from
-    /// their RVAs rather than from `PointerToRawData` file offsets.
+    /// The slice must start at the image base. The parser reads the data of each section at its
+    /// RVA, not at its `PointerToRawData` file offset.
     ///
     /// # Errors
     ///
@@ -54,7 +54,10 @@ impl PeImage {
         Self::parse_with_layout(data, SourceLayout::Mapped)
     }
 
-    /// Parse a loader-mapped image at its actual (possibly relocated) base.
+    /// Parse a loader-mapped image at its actual load base.
+    ///
+    /// `runtime_image_base` is the VA where the loader mapped the image. It can be different
+    /// from `ImageBase` if the loader relocated the image.
     ///
     /// # Errors
     ///
@@ -66,7 +69,7 @@ impl PeImage {
         )
     }
 
-    /// Parse PE bytes using an explicit source layout.
+    /// Parse PE bytes with an explicit source layout.
     ///
     /// # Errors
     ///
@@ -77,7 +80,7 @@ impl PeImage {
         Self::read_from(&reader, 0, layout)
     }
 
-    /// Parse PE bytes with explicit strictness and source-layout options.
+    /// Parse PE bytes with explicit [`ParseOptions`] for strictness and source layout.
     ///
     /// # Errors
     ///
@@ -87,12 +90,14 @@ impl PeImage {
         Self::read_from_with_options(&reader, 0, options)
     }
 
-    /// Read a complete PE from any [`ReadAt`] source using an explicit layout.
+    /// Read a complete PE image from a [`ReadAt`] source with an explicit layout.
     ///
-    /// `base_offset` is the source offset of the image's DOS header. For a
-    /// [`crate::BaseAddressReader`] created at a module base, pass `0` and use
-    /// [`SourceLayout::Mapped`]. A remote-process reader that addresses the whole
-    /// process can instead pass the module's base address as `base_offset`.
+    /// `base_offset` is the offset of the DOS header in the source:
+    ///
+    /// - For a [`crate::BaseAddressReader`] at a module base, pass `0`. Also use
+    ///   [`SourceLayout::Mapped`].
+    /// - A remote-process reader can address the whole process. Such a reader can pass the base
+    ///   address (a VA) of the module as `base_offset`.
     ///
     /// # Errors
     ///
@@ -114,8 +119,11 @@ impl PeImage {
         )
     }
 
-    /// Read a loader-mapped image and retain its actual load base for parsing
-    /// directories that contain absolute VAs.
+    /// Read a loader-mapped image and keep its actual load base.
+    ///
+    /// `source_offset` is the offset of the DOS header in the source. `runtime_image_base` is the
+    /// VA where the loader mapped the image. The parser uses this base for directories that
+    /// contain absolute VAs.
     ///
     /// # Errors
     ///
@@ -132,15 +140,22 @@ impl PeImage {
         )
     }
 
-    /// Read a complete image with explicit parsing options.
+    /// Read a complete image with explicit [`ParseOptions`].
+    ///
+    /// `base_offset` is the offset of the DOS header in the source, as for [`Self::read_from`].
     ///
     /// # Errors
     ///
-    /// Returns an error if [`PeHeaders::read_from`] fails, if `e_lfanew` places
-    /// the PE header inside the DOS header, if a raw-layout section has raw
-    /// bytes but a zero `PointerToRawData`, if a source offset overflows, if
-    /// the reader fails, or if the DOS stub or (with
-    /// [`MissingSectionData::Error`]) a section's bytes cannot be fully read.
+    /// Returns an error if:
+    ///
+    /// - [`PeHeaders::read_from`] fails.
+    /// - `e_lfanew` puts the PE header inside the DOS header.
+    /// - A section in the file layout has raw bytes but a zero `PointerToRawData`.
+    /// - A source offset overflows.
+    /// - The reader fails.
+    /// - The DOS stub cannot be fully read.
+    /// - The bytes of a section cannot be fully read, and the options use
+    ///   [`MissingSectionData::Error`].
     pub fn read_from_with_options<R: ReadAt>(
         reader: &R,
         base_offset: u64,
@@ -148,7 +163,7 @@ impl PeImage {
     ) -> Result<Self> {
         let headers = PeHeaders::read_from(reader, base_offset)?;
 
-        // Read DOS stub
+        // Read the DOS stub.
         let dos_stub_start = base_offset
             .checked_add(DosHeader::SIZE as u64)
             .ok_or_else(|| Error::invalid_section("DOS stub offset overflow"))?;
@@ -168,7 +183,7 @@ impl PeImage {
             Vec::new()
         };
 
-        // Read section data
+        // Read the section data.
         let mut sections = Vec::with_capacity(headers.section_headers.len());
         for header in headers.section_headers {
             if options.layout == SourceLayout::File
@@ -221,7 +236,7 @@ impl PeImage {
         })
     }
 
-    /// Read a source range according to the selected missing-data policy.
+    /// Read a source range and apply the selected [`MissingSectionData`] policy.
     fn read_source_bytes<R: ReadAt>(
         reader: &R,
         offset: u64,
@@ -278,8 +293,8 @@ impl PeImage {
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read or for any condition listed
-    /// on [`Self::read_from_with_options`].
+    /// Returns an error if the read of the file fails. Also returns an error for any condition
+    /// listed on [`Self::read_from_with_options`].
     #[cfg(feature = "std")]
     #[must_use = "loading returns a PE structure that should be used"]
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -289,13 +304,12 @@ impl PeImage {
 
     /// Read a raw PE image from a sequential `nostdio` stream.
     ///
-    /// This normalized image intentionally drops any file overlay. Use
-    /// [`crate::PeFile::from_stream`] when certificates or arbitrary trailing
-    /// bytes must be retained.
+    /// The normalized image does not keep a file overlay. To keep certificates or other trailing
+    /// bytes, use [`crate::PeFile::from_stream`].
     ///
     /// # Errors
     ///
-    /// Returns an error if reading the stream fails or for any condition
+    /// Returns an error if a read from the stream fails. Also returns an error for any condition
     /// listed on [`Self::read_from_with_options`].
     pub fn from_stream<R: nostdio::Read>(stream: &mut R) -> Result<Self> {
         let mut data = Vec::new();

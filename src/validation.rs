@@ -1,6 +1,6 @@
 //! PE validation framework.
 //!
-//! This module provides validation for PE structural integrity.
+//! This module checks the structural integrity of a PE image.
 //!
 //! # Example
 //!
@@ -26,9 +26,9 @@ use core::fmt;
 /// Severity level of a validation issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ValidationLevel {
-    /// Warning - PE may still be valid but has suspicious characteristics.
+    /// Warning: the PE can be valid, but it has suspicious characteristics.
     Warning,
-    /// Error - PE has structural issues that likely make it invalid.
+    /// Error: the PE has structural problems that probably make it invalid.
     Error,
 }
 
@@ -51,39 +51,39 @@ pub enum ValidationCode {
     InvalidPeSignature,
     /// Optional header magic is invalid.
     InvalidOptionalMagic,
-    /// Entry point is outside any section.
+    /// The entry point is not in a section.
     EntryPointOutOfBounds,
-    /// Data directory RVA is invalid.
+    /// A data directory RVA is invalid.
     InvalidDataDirectoryRva,
-    /// Sections overlap in file or virtual address space.
+    /// Sections overlap in the file or in the virtual address space.
     OverlappingSections,
-    /// Section RVA/size is invalid.
+    /// A section RVA or size is invalid.
     InvalidSectionLayout,
-    /// Size of image doesn't match calculated value.
+    /// `SizeOfImage` is not equal to the calculated value.
     InconsistentImageSize,
-    /// Size of headers doesn't match calculated value.
+    /// `SizeOfHeaders` is not equal to the calculated value.
     InconsistentHeadersSize,
-    /// Checksum mismatch.
+    /// The checksum is not correct.
     InvalidChecksum,
-    /// File alignment is not a power of 2 or too small.
+    /// The file alignment is not a power of 2, or it is too small.
     InvalidFileAlignment,
-    /// Section alignment is not a power of 2 or too small.
+    /// The section alignment is not a power of 2, or it is too small.
     InvalidSectionAlignment,
-    /// No sections in PE.
+    /// The PE has no sections.
     NoSections,
-    /// Section has no data but non-zero raw size.
+    /// A section has no data, but its raw size is not zero.
     EmptySectionWithSize,
-    /// COFF section count does not match the parsed section table.
+    /// The COFF section count is not equal to the number of entries in the parsed section table.
     InconsistentSectionCount,
-    /// Optional-header size/count fields do not match their parsed data.
+    /// A size or count field of the optional header does not agree with the parsed data.
     InconsistentOptionalHeader,
-    /// A reserved standard data directory is non-zero.
+    /// A reserved standard data directory is not zero.
     ReservedDataDirectory,
-    /// A data-directory range extends outside readable image/file data.
+    /// A data directory range goes outside the readable image or file data.
     InvalidDataDirectoryRange,
-    /// A section or header address is not aligned as required.
+    /// A section or header address does not have the necessary alignment.
     MisalignedSection,
-    /// Optional-header width is inconsistent with the machine type.
+    /// The width of the optional header does not agree with the machine type.
     MachineMagicMismatch,
 }
 
@@ -100,9 +100,9 @@ pub struct ValidationIssue {
     pub level: ValidationLevel,
     /// Type of issue.
     pub code: ValidationCode,
-    /// Human-readable description.
+    /// Description for humans.
     pub message: String,
-    /// Optional context (e.g., section name, RVA).
+    /// Optional context (for example, a section name or an RVA).
     pub context: Option<String>,
 }
 

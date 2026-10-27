@@ -1,4 +1,4 @@
-//! Raw and loader-mapped image-layout integration tests.
+//! Integration tests for the layout of raw files and loader-mapped images.
 
 use portex::{
     BaseAddressReader, CoffHeader, ImportTable, ImportThunk, MachineType, PeBuilder, PeHeaders,
@@ -166,7 +166,7 @@ fn readers_and_rva_resolution_honor_the_selected_layout() {
         unsafe_code,
         reason = "BaseAddressReader::new is unsafe; this test exercises it on a live buffer"
     )]
-    // SAFETY: `mapped` remains alive and unchanged for the reader's entire use.
+    // SAFETY: `mapped` stays alive and does not change while the reader is in use.
     let base_reader = unsafe { BaseAddressReader::new(mapped.as_ptr(), Some(mapped.len())) };
     let from_base = PeImage::read_from(&base_reader, 0, SourceLayout::Mapped)
         .expect("mapped PE at a base address should parse");

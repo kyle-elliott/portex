@@ -1,31 +1,32 @@
 //! Rich Header parsing and building.
 //!
-//! The Rich Header is an undocumented structure inserted by Microsoft linker
-//! between the DOS stub and PE signature. It contains build tool information.
+//! The Rich header is an undocumented structure. The Microsoft linker inserts it between the
+//! DOS stub and the PE signature. It contains information about the build tools.
 
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// Rich header end marker (`"Rich"`), stored unencoded and followed by the XOR key.
+/// The end marker of the Rich header (`"Rich"`). The file stores it unencoded, followed by the
+/// XOR key.
 const RICH_MAGIC: u32 = 0x6863_6952; // "Rich"
 
-/// `DanS` start marker value (before XOR with the key).
+/// The value of the `DanS` start marker before the XOR with the key.
 const DANS_MAGIC: u32 = 0x536E_6144; // "DanS"
 
-/// A single Rich header entry.
+/// One entry of the Rich header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RichEntry {
-    /// Product ID (compiler/tool identifier).
+    /// The product ID, which identifies the compiler or tool.
     pub product_id: u16,
-    /// Build number.
+    /// The build number of the tool.
     pub build_number: u16,
-    /// Use count.
+    /// The number of objects that the tool made.
     pub use_count: u32,
 }
 
 impl RichEntry {
-    /// Create from a raw `comp_id` value (product ID in the high 16 bits,
-    /// build number in the low 16 bits).
+    /// Create an entry from a raw `comp_id` value. The high 16 bits hold the product ID. The low
+    /// 16 bits hold the build number.
     #[must_use]
     pub fn from_comp_id(comp_id: u32, use_count: u32) -> Self {
         let [build_lo, build_hi, product_lo, product_hi] = comp_id.to_le_bytes();
@@ -36,14 +37,14 @@ impl RichEntry {
         }
     }
 
-    /// Convert to a `comp_id` value (product ID in the high 16 bits, build
-    /// number in the low 16 bits).
+    /// Convert the entry to a `comp_id` value. The high 16 bits hold the product ID. The low 16
+    /// bits hold the build number.
     #[must_use]
     pub fn to_comp_id(self) -> u32 {
         (u32::from(self.product_id) << 16) | u32::from(self.build_number)
     }
 
-    /// Get a description of the product (if known).
+    /// Return a description of the product, if known.
     #[must_use]
     pub fn product_name(self) -> &'static str {
         match self.product_id {
@@ -78,23 +79,23 @@ impl RichEntry {
     }
 }
 
-/// Parsed Rich Header.
+/// A parsed Rich header.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RichHeader {
-    /// XOR key used for encoding.
+    /// The XOR key that encodes the header.
     pub key: u32,
-    /// List of tool entries.
+    /// The tool entries.
     pub entries: Vec<RichEntry>,
-    /// Offset in file where Rich header starts (after DOS stub).
+    /// The file offset of the start of the Rich header (the `DanS` marker), after the DOS stub.
     pub offset: usize,
-    /// Total size of the Rich header.
+    /// The total size of the Rich header in bytes.
     pub size: usize,
 }
 
 impl RichHeader {
-    /// Find and parse Rich header from DOS stub area.
-    /// `data` should start from beginning of file.
-    /// Returns `None` if no Rich header found.
+    /// Find and parse the Rich header in the DOS stub area.
+    ///
+    /// `data` must start at the beginning of the file. Returns `None` if there is no Rich header.
     #[must_use]
     pub fn parse(data: &[u8]) -> Option<Self> {
         // A Rich header lives between the fixed DOS header and the PE header.
@@ -104,11 +105,10 @@ impl RichHeader {
             return None;
         }
 
-        // Search backwards for the literal "Rich" marker followed by its XOR
-        // key. Older Portex versions incorrectly XORed the marker, so accept
-        // that spelling while parsing but never emit it. The marker and the
-        // key must end at or before the PE header, and at least the 16-byte
-        // `DanS` block must come before them.
+        // Search backwards for the literal "Rich" marker, followed by its XOR key. Older Portex
+        // versions incorrectly XORed the marker. Accept that form when you parse, but never
+        // write it. The marker and the key must end at or before the PE header. At least the
+        // 16-byte `DanS` block must come before them.
         for rich_offset in (0x40 + 16..=pe_offset.checked_sub(8)?).rev() {
             let value = read_u32(data, rich_offset)?;
             let key = read_u32(data, rich_offset.checked_add(4)?)?;
@@ -153,7 +153,7 @@ impl RichHeader {
         None
     }
 
-    /// Build Rich header bytes.
+    /// Build the bytes of the Rich header.
     ///
     /// # Panics
     ///
@@ -164,13 +164,13 @@ impl RichHeader {
             .expect("Rich-header build failed: use try_build()")
     }
 
-    /// Build a Rich header with checked entry-size arithmetic.
+    /// Build a Rich header. Use checked arithmetic for the entry sizes.
     ///
     /// # Errors
     ///
     /// Returns a generic error if the encoded size overflows `usize`.
     pub fn try_build(&self) -> Result<Vec<u8>> {
-        // Size: DanS (4) + padding (12) + entries (8 each) + Rich (4) + key (4)
+        // Size: DanS (4) + padding (12) + entries (8 each) + Rich (4) + key (4).
         let size = self
             .entries
             .len()
@@ -180,37 +180,38 @@ impl RichHeader {
         let mut buf = Vec::with_capacity(size);
         let key = self.key;
 
-        // DanS marker and padding (3 dwords), all XORed with the key.
+        // Write the DanS marker and the padding (3 dwords). XOR all of them with the key.
         buf.extend_from_slice(&(DANS_MAGIC ^ key).to_le_bytes());
         for _ in 0..3 {
             buf.extend_from_slice(&key.to_le_bytes());
         }
 
-        // Entries
+        // Write the entries.
         for entry in &self.entries {
             buf.extend_from_slice(&(entry.to_comp_id() ^ key).to_le_bytes());
             buf.extend_from_slice(&(entry.use_count ^ key).to_le_bytes());
         }
 
-        // Rich marker
+        // Write the Rich marker and the key.
         buf.extend_from_slice(&RICH_MAGIC.to_le_bytes());
         buf.extend_from_slice(&key.to_le_bytes());
 
         Ok(buf)
     }
 
-    /// Calculate a checksum/key from the entries (simplified).
-    /// A real implementation would include DOS header in calculation.
+    /// Calculate a simplified checksum from the entries, for use as the key.
+    ///
+    /// A real implementation also includes the full DOS header in the calculation.
     #[must_use]
     pub fn calculate_key(entries: &[RichEntry], dos_header: &[u8]) -> u32 {
         let mut checksum = 0u32;
 
-        // Include DOS header bytes (rotated sum)
+        // Include the DOS header bytes (rotated sum).
         for (rotation, &byte) in (0u32..).zip(dos_header.iter().take(0x3C)) {
             checksum = checksum.wrapping_add(u32::from(byte).rotate_left(rotation));
         }
 
-        // Include entries
+        // Include the entries.
         for entry in entries {
             let comp_id = entry.to_comp_id();
             checksum = checksum.wrapping_add(comp_id.rotate_left(entry.use_count & 0x1F));
@@ -219,17 +220,17 @@ impl RichHeader {
         checksum
     }
 
-    /// Check if the Rich header is empty.
+    /// Return `true` if the Rich header has no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 }
 
-/// Builder for Rich headers.
+/// A builder for Rich headers.
 ///
-/// Rich headers contain build tool information inserted by Microsoft linkers.
-/// This builder helps create Rich headers with proper XOR encoding.
+/// The Microsoft linker inserts a Rich header with information about the build tools. This
+/// builder creates Rich headers with the correct XOR encoding.
 ///
 /// # Example
 ///
@@ -255,13 +256,13 @@ pub struct RichBuilder {
 }
 
 impl RichBuilder {
-    /// Create a new Rich builder.
+    /// Create an empty Rich builder.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create from an existing Rich header.
+    /// Create a builder from an existing Rich header.
     #[must_use]
     pub fn from_header(header: &RichHeader) -> Self {
         Self {
@@ -275,7 +276,7 @@ impl RichBuilder {
         self
     }
 
-    /// Add a build tool entry by components.
+    /// Add a build tool entry from its parts.
     pub fn add(&mut self, product_id: u16, build_number: u16, use_count: u32) -> &mut Self {
         self.entries.push(RichEntry {
             product_id,
@@ -285,7 +286,7 @@ impl RichBuilder {
         self
     }
 
-    /// Get the number of entries.
+    /// Return the number of entries.
     #[must_use]
     pub fn entry_count(&self) -> usize {
         self.entries.len()
@@ -302,7 +303,7 @@ impl RichBuilder {
             .expect("Rich-header size overflow: use try_calculate_size()")
     }
 
-    /// Calculate the encoded size with checked arithmetic.
+    /// Calculate the encoded size. Use checked arithmetic.
     ///
     /// # Errors
     ///
@@ -315,8 +316,7 @@ impl RichBuilder {
             .ok_or_else(|| Error::generic("Rich-header size overflow"))
     }
 
-    /// Build with a specific XOR key.
-    /// Returns `(data, size)`.
+    /// Build the Rich header with a specific XOR key. Returns `(data, size)`.
     ///
     /// # Panics
     ///
@@ -327,8 +327,7 @@ impl RichBuilder {
             .expect("Rich-header build failed: use try_build_with_key()")
     }
 
-    /// Build with a specific key and checked encoded size.
-    /// Returns `(data, size)`.
+    /// Build the Rich header with a specific key. Check the encoded size. Returns `(data, size)`.
     ///
     /// # Errors
     ///
@@ -347,8 +346,7 @@ impl RichBuilder {
         Ok((data, size))
     }
 
-    /// Build with a calculated key based on the DOS header.
-    /// Returns `(data, size)`.
+    /// Build the Rich header with a key calculated from the DOS header. Returns `(data, size)`.
     ///
     /// # Panics
     ///
@@ -359,7 +357,7 @@ impl RichBuilder {
             .expect("Rich-header build failed: use try_build_with_dos_header()")
     }
 
-    /// Build using a calculated key with checked encoded size.
+    /// Build the Rich header with a key calculated from the DOS header. Check the encoded size.
     /// Returns `(data, size)`.
     ///
     /// # Errors
@@ -370,7 +368,7 @@ impl RichBuilder {
         self.try_build_with_key(key)
     }
 
-    /// Build into a `RichHeader` struct with a specific key.
+    /// Build a [`RichHeader`] with a specific key.
     ///
     /// # Panics
     ///
@@ -381,7 +379,7 @@ impl RichBuilder {
             .expect("Rich-header size overflow: use try_into_header()")
     }
 
-    /// Build into a `RichHeader` struct with a specific key.
+    /// Build a [`RichHeader`] with a specific key. Check the encoded size.
     ///
     /// # Errors
     ///
@@ -443,13 +441,13 @@ mod tests {
 
         let built = header.build();
 
-        // Create minimal PE structure for parsing
+        // Create a minimal PE structure to parse.
         let mut pe_data = vec![0u8; 0x200];
         pe_data[0] = b'M';
         pe_data[1] = b'Z';
         pe_data[0x3C..0x40].copy_from_slice(&0x100u32.to_le_bytes()); // PE at 0x100
 
-        // Insert Rich header at 0x80
+        // Insert the Rich header at 0x80.
         pe_data[0x80..0x80 + built.len()].copy_from_slice(&built);
 
         let parsed = RichHeader::parse(&pe_data).expect("Failed to parse Rich header");
@@ -470,7 +468,7 @@ mod tests {
         assert_eq!(data.len(), size as usize);
         assert_eq!(size as usize, builder.calculate_size());
 
-        // Verify by parsing
+        // Parse the result to verify it.
         let mut pe_data = vec![0u8; 0x200];
         pe_data[0] = b'M';
         pe_data[1] = b'Z';

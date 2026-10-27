@@ -1,7 +1,7 @@
-//! Executable-image data directories.
+//! Data directories of an executable image.
 //!
-//! CLR metadata itself is intentionally outside Portex's scope; [`CliHeader`]
-//! exposes the PE-level handoff to a metadata crate.
+//! Portex does not parse CLR metadata. [`CliHeader`] gives the PE-level data that a metadata
+//! crate needs to continue.
 
 pub use crate::bound_import::{
     BoundForwarderRef, BoundImportBuilder, BoundImportDescriptor, BoundImportDirectory,

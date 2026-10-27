@@ -1,7 +1,7 @@
 //! Resource directory parsing and building.
 //!
-//! The resource directory contains embedded resources like icons, version info,
-//! manifests, dialogs, and other application data.
+//! The resource directory contains embedded resources, for example icons, version information,
+//! manifests, dialogs and other application data.
 //!
 //! # Examples
 //!
@@ -32,18 +32,18 @@
 //! # let file_bytes: &[u8] = &[];
 //! let mut pe = PeImage::parse(file_bytes)?;
 //!
-//! // Build resources
+//! // Make a resource builder.
 //! let mut builder = ResourceBuilder::new();
 //!
-//! // Add a manifest (RT_MANIFEST = 24)
+//! // Add a manifest (RT_MANIFEST = 24).
 //! let manifest = b"<?xml version=\"1.0\"?>...";
 //! builder.add_resource(ResourceType::Manifest, 1, 0x0409, manifest.to_vec());
 //!
-//! // Add an icon
+//! // Add an icon.
 //! let icon_data = vec![0u8; 16];
 //! builder.add_resource(ResourceType::Icon, 1, 0x0409, icon_data);
 //!
-//! // Update PE with new resources (using builder for new resources)
+//! // Replace the resources of the PE image with the builder contents.
 //! pe.update_resources_from_builder(&builder, None)?;
 //! let rebuilt = pe.try_build()?;
 //! assert!(!rebuilt.is_empty());
@@ -162,7 +162,7 @@ impl ResourceType {
     }
 }
 
-/// Resource name/ID - can be numeric or string.
+/// A resource name or ID. It can be a number or a string.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ResourceId {
     /// Numeric ID.
@@ -172,7 +172,9 @@ pub enum ResourceId {
 }
 
 impl ResourceId {
-    /// Check if this is a standard resource type ID.
+    /// Convert a numeric ID to a standard resource type.
+    ///
+    /// Returns `None` for a string name or for an ID that is not a standard resource type.
     #[must_use]
     pub fn as_resource_type(&self) -> Option<ResourceType> {
         match self {
@@ -182,11 +184,12 @@ impl ResourceId {
     }
 }
 
-/// `IMAGE_RESOURCE_DIRECTORY` (16 bytes): header of one level of the resource
-/// tree, followed by its named entries and then its ID entries.
+/// `IMAGE_RESOURCE_DIRECTORY` (16 bytes): the header of one level of the resource tree.
+///
+/// The named entries follow the header. The ID entries follow the named entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ResourceDirectoryHeader {
-    /// Resource flags (reserved, usually 0).
+    /// Resource flags. This field is reserved and is usually 0.
     pub characteristics: u32,
     /// Time/date stamp.
     pub time_date_stamp: u32,
@@ -237,20 +240,23 @@ impl ResourceDirectoryHeader {
         buf
     }
 
-    /// Total number of directory entries (named plus ID) following the header.
+    /// Total number of directory entries (named entries plus ID entries) after the header.
     #[must_use]
     pub fn total_entries(&self) -> usize {
         self.number_of_named_entries as usize + self.number_of_id_entries as usize
     }
 }
 
-/// `IMAGE_RESOURCE_DIRECTORY_ENTRY` (8 bytes): one entry of a resource
-/// directory, naming a child and pointing to a subdirectory or data entry.
+/// `IMAGE_RESOURCE_DIRECTORY_ENTRY` (8 bytes): one entry of a resource directory.
+///
+/// The entry names a child. It points to a subdirectory or to a data entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ResourceDirectoryEntry {
-    /// Name offset (high bit set) or ID.
+    /// Name offset or ID. If the high bit is set, the low 31 bits are a name offset from the
+    /// start of the resource directory. Otherwise, the field holds the ID.
     pub name_or_id: u32,
-    /// Offset to data or subdirectory (high bit set = subdirectory).
+    /// Offset of the data entry or subdirectory, from the start of the resource directory.
+    /// If the high bit is set, the offset points to a subdirectory.
     pub offset_to_data: u32,
 }
 
@@ -283,47 +289,51 @@ impl ResourceDirectoryEntry {
         buf
     }
 
-    /// Check if this entry has a string name (vs numeric ID).
+    /// Check if this entry has a string name instead of a numeric ID.
     #[must_use]
     pub fn is_named(self) -> bool {
         (self.name_or_id & 0x8000_0000) != 0
     }
 
-    /// Get the name offset, relative to the start of the resource directory
-    /// (only valid if [`Self::is_named`] is true).
+    /// Get the name offset, relative to the start of the resource directory.
+    ///
+    /// The value is valid only if [`Self::is_named`] is true.
     #[must_use]
     pub fn name_offset(self) -> u32 {
         self.name_or_id & 0x7FFF_FFFF
     }
 
-    /// Get the ID from the low 16 bits (only valid if [`Self::is_named`] is false).
+    /// Get the ID from the low 16 bits.
+    ///
+    /// The value is valid only if [`Self::is_named`] is false.
     #[must_use]
     pub fn id(self) -> u16 {
         let [low, high, _, _] = self.name_or_id.to_le_bytes();
         u16::from_le_bytes([low, high])
     }
 
-    /// Check if this points to a subdirectory (vs data entry).
+    /// Check if this entry points to a subdirectory instead of a data entry.
     #[must_use]
     pub fn is_directory(self) -> bool {
         (self.offset_to_data & 0x8000_0000) != 0
     }
 
-    /// Get the offset to the subdirectory or data entry, relative to the start
-    /// of the resource directory.
+    /// Get the offset of the subdirectory or data entry, relative to the start of the resource
+    /// directory.
     #[must_use]
     pub fn data_offset(self) -> u32 {
         self.offset_to_data & 0x7FFF_FFFF
     }
 }
 
-/// `IMAGE_RESOURCE_DATA_ENTRY` (16 bytes): leaf of the resource tree
-/// describing one resource payload.
+/// `IMAGE_RESOURCE_DATA_ENTRY` (16 bytes): a leaf of the resource tree.
+///
+/// The data entry describes the payload of one resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ResourceDataEntry {
     /// RVA of the resource data.
     pub offset_to_data: u32,
-    /// Size of the resource data.
+    /// Size of the resource data, in bytes.
     pub size: u32,
     /// Code page.
     pub code_page: u32,
@@ -365,22 +375,22 @@ impl ResourceDataEntry {
     }
 }
 
-/// A parsed resource entry with optional data.
+/// A parsed resource entry, with optional data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resource {
     /// Resource type (level 1).
     pub type_id: ResourceId,
-    /// Resource name/ID (level 2).
+    /// Resource name or ID (level 2).
     pub name: ResourceId,
     /// Language ID (level 3).
     pub language: u16,
     /// RVA of the resource data.
     pub data_rva: u32,
-    /// Size of the resource data.
+    /// Size of the resource data, in bytes.
     pub size: u32,
     /// Code page.
     pub code_page: u32,
-    /// The actual resource data (only populated if parsed with `parse_with_data`).
+    /// The resource data. Only `parse_with_data` sets this field.
     pub data: Option<Vec<u8>>,
 }
 
@@ -391,7 +401,7 @@ impl Resource {
         matches!(&self.type_id, ResourceId::Id(id) if *id == rt as u16)
     }
 
-    /// Get as standard resource type.
+    /// Get the standard resource type of this resource, if it has one.
     #[must_use]
     pub fn get_type(&self) -> Option<ResourceType> {
         self.type_id.as_resource_type()

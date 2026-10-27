@@ -15,13 +15,13 @@ use std::io::Write;
 #[cfg(feature = "std")]
 use std::path::Path;
 
-/// A raw PE file together with bytes outside the mapped image.
+/// A raw PE file together with the bytes outside the mapped image.
 ///
-/// [`PeImage`] owns normalized headers and sections and can therefore represent
-/// either raw-file or loader-mapped input. `PeFile` adds the raw-only state that
-/// cannot exist in a mapped image: the file overlay and the attribute
-/// certificate table. Use this type when byte-preserving overlays or
-/// Authenticode certificates matter.
+/// [`PeImage`] owns the normalized headers and sections. Thus it can hold raw-file input or
+/// loader-mapped input. `PeFile` adds the raw-only state that a mapped image cannot have: the
+/// file overlay and the attribute certificate table.
+///
+/// Use this type if you must keep the overlay byte for byte or keep Authenticode certificates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeFile {
     /// Parsed executable image.
@@ -51,8 +51,8 @@ impl PeFile {
     ///
     /// # Errors
     ///
-    /// Returns an error if layout recomputation fails or the resulting raw
-    /// layout cannot be represented.
+    /// Returns an error if the layout update fails, or if the new raw layout cannot be
+    /// represented.
     pub fn new(mut image: PeImage) -> Result<Self> {
         image.try_update_layout()?;
         let source_layout = RawLayoutFingerprint::from_image(&image)?;
@@ -78,13 +78,19 @@ impl PeFile {
 
     /// Parse a complete raw PE file.
     ///
+    /// The `VirtualAddress` field of the Security directory holds a file offset, not an RVA.
+    ///
     /// # Errors
     ///
-    /// Returns an error if [`PeImage::parse`] fails, if `data` ends before the
-    /// headers and raw section data, or if the Security directory (attribute
-    /// certificate table) has only one of its file offset and size set, lies
-    /// outside the file or inside the image, is not 8-byte aligned, or does not
-    /// parse.
+    /// Returns an error if:
+    ///
+    /// - [`PeImage::parse`] fails.
+    /// - `data` ends before the end of the headers and the raw section data.
+    /// - The Security directory (the attribute certificate table) has only one of its file offset
+    ///   and size set.
+    /// - The Security directory is outside the file or inside the image.
+    /// - The file offset of the Security directory is not aligned to 8 bytes.
+    /// - The certificate table does not parse.
     pub fn parse(data: &[u8]) -> Result<Self> {
         let image = PeImage::parse(data)?;
         let image_end = raw_image_end(&image)?;
@@ -144,14 +150,19 @@ impl PeFile {
 
     /// Read and parse a complete raw PE file from a [`ReadAt`].
     ///
-    /// The reader must report its size because an overlay has no header field
-    /// that identifies its end.
+    /// `base_offset` is the offset in the source where the PE file starts. The method reads from
+    /// `base_offset` to the end of the source.
+    ///
+    /// The reader must report its size, because no header field gives the end of an overlay.
     ///
     /// # Errors
     ///
-    /// Returns an error if the reader does not report its size, if
-    /// `base_offset` lies past the end of the source, if reading fails, or for
-    /// any condition listed on [`Self::parse`].
+    /// Returns an error if:
+    ///
+    /// - The reader does not report its size.
+    /// - `base_offset` is past the end of the source.
+    /// - A read fails.
+    /// - Any condition listed on [`Self::parse`] occurs.
     pub fn read_from<R: ReadAt>(reader: &R, base_offset: u64) -> Result<Self> {
         let source_size = reader
             .size()
@@ -168,8 +179,8 @@ impl PeFile {
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read or for any condition listed
-    /// on [`Self::parse`].
+    /// Returns an error if the read of the file fails. Also returns an error for any condition
+    /// listed on [`Self::parse`].
     #[cfg(feature = "std")]
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         Self::parse(&std::fs::read(path)?)
@@ -179,7 +190,7 @@ impl PeFile {
     ///
     /// # Errors
     ///
-    /// Returns an error if reading the stream fails or for any condition
+    /// Returns an error if a read from the stream fails. Also returns an error for any condition
     /// listed on [`Self::parse`].
     pub fn from_stream<R: nostdio::Read>(stream: &mut R) -> Result<Self> {
         let mut data = Vec::new();
@@ -189,7 +200,7 @@ impl PeFile {
         Self::parse(&data)
     }
 
-    /// Return all bytes after the headers and raw section data.
+    /// Return all bytes after the headers and the raw section data.
     #[must_use]
     pub fn overlay(&self) -> &[u8] {
         &self.overlay
@@ -197,24 +208,24 @@ impl PeFile {
 
     /// Return the overlay for in-place byte edits.
     ///
-    /// The slice cannot be resized, so any stored certificate location remains
-    /// valid. Use [`Self::set_overlay`] when replacing the complete overlay.
+    /// The slice has a fixed length, so a stored certificate location stays valid. To replace the
+    /// complete overlay, use [`Self::set_overlay`].
     pub fn overlay_mut(&mut self) -> &mut [u8] {
         &mut self.overlay
     }
 
     /// Replace the complete overlay and clear the Security directory.
     ///
-    /// Use [`Self::set_security`] after this method to install a new certificate
-    /// table in the replacement bytes.
+    /// To put a new certificate table in the new bytes, call [`Self::set_security`] after this
+    /// method.
     pub fn set_overlay(&mut self, overlay: Vec<u8>) {
         self.overlay = overlay;
         self.certificate_range = None;
         self.image.clear_security();
     }
 
-    /// Whether raw header/section gaps from the parsed source can still be
-    /// restored safely during the next build.
+    /// Return `true` if the next build can still safely restore the raw gaps in the headers and
+    /// sections of the parsed source.
     #[must_use]
     pub fn preserves_source_gaps(&self) -> bool {
         RawLayoutFingerprint::from_image(&self.image)
@@ -227,18 +238,18 @@ impl PeFile {
         self.image
     }
 
-    /// Return the certificate-table range relative to the overlay.
+    /// Return the range of the certificate table, as offsets from the start of the overlay.
     #[must_use]
     pub fn certificate_overlay_range(&self) -> Option<Range<usize>> {
         self.certificate_range.clone()
     }
 
-    /// Parse the attribute certificate table.
+    /// Parse the attribute certificate table (the `WIN_CERTIFICATE` entries).
     ///
     /// # Errors
     ///
-    /// Returns an error if the stored certificate range exceeds the overlay or
-    /// the `WIN_CERTIFICATE` entries are malformed.
+    /// Returns an error if the stored certificate range exceeds the overlay, or if the
+    /// `WIN_CERTIFICATE` entries are malformed.
     pub fn security(&self) -> Result<Option<SecurityDirectory>> {
         let Some(range) = &self.certificate_range else {
             return Ok(None);
@@ -249,12 +260,12 @@ impl PeFile {
         Ok(Some(SecurityDirectory::parse(data)?))
     }
 
-    /// Return raw bytes for any standard data directory.
+    /// Return the raw bytes of a standard data directory.
     ///
     /// # Errors
     ///
-    /// Returns an error if the stored certificate range exceeds the overlay,
-    /// or for non-Security directories, any condition listed on
+    /// For the Security directory, returns an error if the stored certificate range exceeds the
+    /// overlay. For other directories, returns an error for any condition listed on
     /// [`PeImage::directory_data`].
     pub fn directory_data(&self, dir_type: DataDirectoryType) -> Result<Option<Vec<u8>>> {
         if dir_type != DataDirectoryType::Security {
@@ -269,14 +280,15 @@ impl PeFile {
             .ok_or_else(|| Error::invalid_data_directory("certificate range exceeds the overlay"))
     }
 
-    /// Parse debug entries from the raw file, including payloads that are
-    /// reachable only through `PointerToRawData` and therefore disappear from
-    /// a loader-mapped image.
+    /// Parse the debug entries from the raw file.
+    ///
+    /// The result includes payloads that only `PointerToRawData` (a file offset) can reach. These
+    /// payloads are not in a loader-mapped image.
     ///
     /// # Errors
     ///
-    /// Returns an error if building or re-parsing the raw file fails, or if
-    /// the debug directory or its payloads are unreadable or malformed.
+    /// Returns an error if the build or the new parse of the raw file fails. Also returns an
+    /// error if the debug directory or its payloads are unreadable or malformed.
     pub fn debug_info(&self) -> Result<Option<crate::debug::DebugInfo>> {
         let raw = self.try_build()?;
         let image = PeImage::parse(&raw)?;
@@ -302,14 +314,15 @@ impl PeFile {
         .map(Some)
     }
 
-    /// Replace or add the attribute certificate table while preserving other
-    /// overlay bytes.
+    /// Replace or add the attribute certificate table, and keep the other overlay bytes.
     ///
     /// # Errors
     ///
-    /// Returns an error if the certificate table cannot be encoded, if the
-    /// stored certificate range exceeds the overlay, or if the aligned overlay
-    /// size overflows.
+    /// Returns an error if:
+    ///
+    /// - The certificate table cannot be encoded.
+    /// - The stored certificate range exceeds the overlay.
+    /// - The aligned overlay size overflows.
     pub fn set_security(&mut self, directory: &SecurityDirectory) -> Result<()> {
         if directory.certificates.is_empty() {
             self.clear_security();
@@ -342,8 +355,7 @@ impl PeFile {
         Ok(())
     }
 
-    /// Remove the certificate table and its bytes while preserving the rest of
-    /// the overlay.
+    /// Remove the certificate table and its bytes, and keep the rest of the overlay.
     pub fn clear_security(&mut self) {
         if let Some(range) = self.certificate_range.take()
             && range.start <= range.end
@@ -358,10 +370,12 @@ impl PeFile {
     ///
     /// # Errors
     ///
-    /// Returns an error if the certificate table size or file offset exceeds
-    /// `u32`, if the stored certificate range exceeds the overlay, if the file
-    /// size overflows, or if building the image fails (see
-    /// [`PeImage::try_build`]).
+    /// Returns an error if:
+    ///
+    /// - The size or the file offset of the certificate table does not fit in a `u32`.
+    /// - The stored certificate range exceeds the overlay.
+    /// - The file size overflows.
+    /// - The build of the image fails (see [`PeImage::try_build`]).
     pub fn try_build(&self) -> Result<Vec<u8>> {
         let mut pe = self.image.clone();
         let certificate_size = self
@@ -374,8 +388,8 @@ impl PeFile {
             })
             .transpose()?;
         if let Some(size) = certificate_size {
-            // Reserve the entry before layout in case the source used fewer
-            // than the five directory slots needed for Security.
+            // Reserve the entry before the layout update. The source can have fewer than the
+            // five directory slots that Security needs.
             pe.set_data_directory(DataDirectoryType::Security, 1, size);
         } else {
             pe.clear_security();
@@ -441,8 +455,9 @@ impl PeFile {
         Ok(output)
     }
 
-    /// Build a raw PE file, panicking if its manually-constructed state is
-    /// invalid. Prefer [`Self::try_build`] for untrusted state.
+    /// Build a raw PE file, or panic if its hand-built state is not valid.
+    ///
+    /// For untrusted state, use [`Self::try_build`].
     ///
     /// # Panics
     ///
@@ -457,8 +472,8 @@ impl PeFile {
     ///
     /// # Errors
     ///
-    /// Returns an error if [`Self::try_build`] fails or the file cannot be
-    /// created or written.
+    /// Returns an error if [`Self::try_build`] fails, or if the creation of the file or the write
+    /// fails.
     #[cfg(feature = "std")]
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = self.try_build()?;

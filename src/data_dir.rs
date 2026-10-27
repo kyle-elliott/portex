@@ -1,10 +1,10 @@
-//! Data Directory structures and parsing.
+//! Data directory structures and parsing.
 
 use crate::prelude::*;
 use crate::reader::ReadAt;
 use crate::{Error, Result};
 
-/// Data directory type - type-safe enum for data directory indices.
+/// The type of a data directory, as a type-safe index into the data directory table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum DataDirectoryType {
@@ -16,15 +16,15 @@ pub enum DataDirectoryType {
     Resource = 2,
     /// Exception table (.pdata)
     Exception = 3,
-    /// Certificate/Security table
+    /// Certificate (security) table. Its `virtual_address` is a file offset, not an RVA.
     Security = 4,
     /// Base relocation table (.reloc)
     BaseReloc = 5,
     /// Debug directory
     Debug = 6,
-    /// Architecture-specific data
+    /// Architecture-specific data.
     Architecture = 7,
-    /// Global pointer register value
+    /// The RVA of the value for the global pointer register.
     GlobalPtr = 8,
     /// Thread local storage (.tls)
     Tls = 9,
@@ -43,13 +43,13 @@ pub enum DataDirectoryType {
 }
 
 impl DataDirectoryType {
-    /// Get the index value.
+    /// Get the index of this directory type.
     #[must_use]
     pub const fn as_index(self) -> usize {
         self as usize
     }
 
-    /// Try to create from an index.
+    /// Make a directory type from an index. Returns `None` if the index is not in 0..16.
     #[must_use]
     pub const fn from_index(index: usize) -> Option<Self> {
         match index {
@@ -102,14 +102,18 @@ impl DataDirectoryType {
     }
 }
 
-/// Number of data directories in PE32+.
+/// Number of data directory entries that the PE format defines.
+///
+/// This is `IMAGE_NUMBEROF_DIRECTORY_ENTRIES`. The value is the same for PE32 and PE32+. An
+/// optional header can declare fewer entries in `NumberOfRvaAndSizes`.
 pub const NUMBER_OF_DIRECTORY_ENTRIES: usize = 16;
 
 /// Data Directory entry (`IMAGE_DATA_DIRECTORY`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
 pub struct DataDirectory {
-    /// RVA (Relative Virtual Address) of the table.
+    /// The start address of the table. This is an RVA for all entries but
+    /// [`DataDirectoryType::Security`]: for that entry, it is a file offset.
     pub virtual_address: u32,
     /// Size of the table in bytes.
     pub size: u32,
@@ -164,13 +168,13 @@ impl DataDirectory {
         buf
     }
 
-    /// Check if this directory entry is present (non-zero).
+    /// Check if this directory entry is present (the address or the size is not zero).
     #[must_use]
     pub fn is_present(self) -> bool {
         self.virtual_address != 0 || self.size != 0
     }
 
-    /// Parse a data directory from a positional reader at the given offset.
+    /// Parse a data directory from a positional reader at the reader offset `offset`.
     ///
     /// # Errors
     ///
@@ -181,12 +185,13 @@ impl DataDirectory {
         Self::parse(&buf)
     }
 
-    /// Read `count` consecutive data directories from a positional reader.
+    /// Read `count` consecutive data directories from a positional reader, starting at the
+    /// reader offset `offset`.
     ///
     /// # Errors
     ///
-    /// Returns an invalid-data-directory error if the table size or an entry
-    /// offset overflows, or a read error if any entry cannot be read.
+    /// Returns an invalid-data-directory error if the table size or an entry offset overflows.
+    /// Returns a read error if `reader` cannot read an entry.
     pub fn read_directories<R: ReadAt>(reader: &R, offset: u64, count: usize) -> Result<Vec<Self>> {
         count
             .checked_mul(Self::SIZE)

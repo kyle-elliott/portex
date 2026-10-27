@@ -1,8 +1,8 @@
-//! Whole-image parsing, editing, and building APIs.
+//! APIs that parse, edit and build a full image.
 //!
-//! Use [`PeImage`] when bytes are already normalized as either a raw file or a
-//! loader-mapped image. Use [`PeFile`] when raw-only state such as overlay bytes,
-//! Authenticode certificates, and file gaps must survive a round trip.
+//! Use [`PeImage`] when the bytes are already in one layout: a raw file or a loader-mapped
+//! image. Use [`PeFile`] when raw-only data must stay the same after a round trip. Raw-only
+//! data includes overlay bytes, Authenticode certificates and file gaps.
 
 pub use crate::builder::PeBuilder;
 pub use crate::layout::LayoutConfig;

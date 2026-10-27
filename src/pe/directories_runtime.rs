@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::{Error, Result};
 
 impl PeImage {
-    /// Parse the TLS directory (`IMAGE_TLS_DIRECTORY32`/`IMAGE_TLS_DIRECTORY64`).
+    /// Parse the TLS directory (`IMAGE_TLS_DIRECTORY32` or `IMAGE_TLS_DIRECTORY64`).
     ///
     /// Returns `Ok(None)` if the TLS data directory is absent.
     ///
@@ -15,10 +15,10 @@ impl PeImage {
         self.tls_at_image_base(self.runtime_image_base())
     }
 
-    /// Parse the TLS directory using the image's actual runtime base.
+    /// Parse the TLS directory with the actual runtime base of the image.
     ///
-    /// A loader relocates the VA fields in a mapped TLS directory. Pass the
-    /// module's current base here when parsing an ASLR-relocated mapped image.
+    /// A loader relocates the VA fields in a mapped TLS directory. To parse an ASLR-relocated
+    /// mapped image, give the current base address (a VA) of the module.
     ///
     /// # Errors
     ///
@@ -48,16 +48,17 @@ impl PeImage {
         }
     }
 
-    /// Update the TLS directory.
+    /// Write a new TLS directory (`IMAGE_TLS_DIRECTORY32` or `IMAGE_TLS_DIRECTORY64`).
     ///
-    /// Creates or replaces the TLS directory with new data.
-    /// If `target_section` is `None`, uses ".rdata" or the last section.
+    /// This function creates the TLS directory, or replaces the current one. If
+    /// `target_section` is `None`, the function uses ".rdata". If ".rdata" does not exist, it
+    /// uses the last section.
     ///
     /// # Arguments
-    /// * `tls_info` - The TLS information to write
-    /// * `target_section` - Optional section to place the TLS data
+    /// * `tls_info` - The TLS data to write.
+    /// * `target_section` - The name of the section that gets the TLS data (optional).
     ///
-    /// Returns the RVA where the TLS directory was written.
+    /// Returns the RVA of the new TLS directory.
     ///
     /// # Errors
     ///
@@ -73,7 +74,7 @@ impl PeImage {
         use crate::tls::TlsBuilder;
         self.ensure_data_directory_slot(DataDirectoryType::Tls)?;
 
-        // Find target section
+        // Find the target section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
@@ -90,21 +91,21 @@ impl PeImage {
             return Err(crate::Error::invalid_section(&section_name));
         };
 
-        // Calculate append RVA
+        // Get the RVA for the appended data.
         let append_rva = self.prepare_section_append(section_idx)?;
 
-        // Build TLS data with correct RVA
+        // Build the TLS data for that RVA.
         let builder = TlsBuilder::new(append_rva, self.image_base(), self.is_64bit());
         let (data, dir_size) = builder.try_build_from_info(tls_info)?;
 
-        // Append data to section
+        // Append the data to the section.
         self.commit_section_append(section_idx, append_rva, &data)?;
         self.set_data_directory(DataDirectoryType::Tls, append_rva, dir_size);
 
         Ok(append_rva)
     }
 
-    /// Parse the debug directory (`IMAGE_DEBUG_DIRECTORY[]`).
+    /// Parse the debug directory (an array of `IMAGE_DEBUG_DIRECTORY`).
     ///
     /// Returns `Ok(None)` if the debug data directory is absent.
     ///
@@ -131,16 +132,17 @@ impl PeImage {
         }
     }
 
-    /// Update the debug directory with a CodeView entry pointing to a PDB.
+    /// Write a debug directory with one CodeView entry that points to a PDB.
     ///
-    /// This is the most common debug directory format. Creates a single CodeView RSDS entry.
-    /// If `target_section` is `None`, uses ".rdata" or the last section.
+    /// This is the most common debug directory format. The function writes one CodeView RSDS
+    /// entry. If `target_section` is `None`, the function uses ".rdata". If ".rdata" does not
+    /// exist, it uses the last section.
     ///
     /// # Arguments
-    /// * `codeview` - The `CodeView` info containing PDB path and GUID
-    /// * `target_section` - Optional section to place the debug data
+    /// * `codeview` - The `CodeView` data, with the PDB path and the GUID.
+    /// * `target_section` - The name of the section that gets the debug data (optional).
     ///
-    /// Returns the RVA where the debug directory was written.
+    /// Returns the RVA of the new debug directory.
     ///
     /// # Errors
     ///
@@ -157,7 +159,7 @@ impl PeImage {
         use crate::debug::DebugBuilder;
         self.ensure_data_directory_slot(DataDirectoryType::Debug)?;
 
-        // Find target section
+        // Find the target section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
@@ -174,24 +176,24 @@ impl PeImage {
             return Err(crate::Error::invalid_section(&section_name));
         };
 
-        // Calculate append RVA
+        // Get the RVA for the appended data.
         let append_rva = self.prepare_section_append(section_idx)?;
 
-        // Build debug data with correct RVA
+        // Build the debug data for that RVA.
         let builder = DebugBuilder::new(append_rva);
         let (data, dir_size, _) = builder.try_build_codeview(codeview)?;
 
-        // Append data to section
+        // Append the data to the section.
         self.commit_section_append(section_idx, append_rva, &data)?;
         self.set_data_directory(DataDirectoryType::Debug, append_rva, dir_size);
 
         Ok(append_rva)
     }
 
-    /// Update the debug directory from a `DebugInfo` structure.
+    /// Write the debug directory from a `DebugInfo` structure.
     ///
-    /// Returns the RVA where the debug directory was written, or 0 if
-    /// `debug_info` has no entries and the directory was cleared.
+    /// Returns the RVA of the new debug directory. If `debug_info` has no entries, the
+    /// function clears the directory and returns 0.
     ///
     /// # Errors
     ///
@@ -207,14 +209,14 @@ impl PeImage {
         use crate::data_dir::DataDirectoryType;
         use crate::debug::DebugBuilder;
 
-        // No debug info to write
+        // There is no debug data to write.
         if debug_info.directories.is_empty() {
             self.clear_data_directory(DataDirectoryType::Debug);
             return Ok(0);
         }
         self.ensure_data_directory_slot(DataDirectoryType::Debug)?;
 
-        // Find target section
+        // Find the target section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
@@ -231,23 +233,23 @@ impl PeImage {
             return Err(crate::Error::invalid_section(&section_name));
         };
 
-        // Calculate append RVA
+        // Get the RVA for the appended data.
         let append_rva = self.prepare_section_append(section_idx)?;
 
-        // Rebuild every entry together with its preserved raw payload.
+        // Rebuild each entry together with its kept raw payload.
         let builder = DebugBuilder::new(append_rva);
         let (data, dir_size, _) = builder.try_build(debug_info)?;
 
-        // Append data to section
+        // Append the data to the section.
         self.commit_section_append(section_idx, append_rva, &data)?;
         self.set_data_directory(DataDirectoryType::Debug, append_rva, dir_size);
 
         Ok(append_rva)
     }
 
-    /// Parse the CLI header (`IMAGE_COR20_HEADER`) for .NET assemblies.
+    /// Parse the CLI header (`IMAGE_COR20_HEADER`) of a .NET assembly.
     ///
-    /// Returns `None` if the CLR data directory is not present.
+    /// Returns `Ok(None)` if the CLR data directory is absent.
     ///
     /// # Example
     ///
@@ -290,17 +292,17 @@ impl PeImage {
         }
     }
 
-    /// Return the raw CLR metadata blob for hand-off to a metadata crate.
+    /// Return the raw CLR metadata blob, for use by a metadata crate.
     ///
-    /// Portex deliberately stops at this boundary; metadata streams and tables
-    /// belong to crates such as `clrmeta`.
+    /// Portex does not parse past this point. Crates such as `clrmeta` parse the metadata
+    /// streams and tables.
     ///
     /// Returns `Ok(None)` if the CLR data directory is absent.
     ///
     /// # Errors
     ///
-    /// Returns an error if the CLI header cannot be parsed, if only one of its
-    /// metadata RVA and size is set, or if the metadata blob cannot be read.
+    /// Returns an error if the CLI header cannot be parsed, or if the metadata blob cannot be
+    /// read. Also returns an error if only one of the metadata RVA and the metadata size is set.
     pub fn clr_metadata(&self) -> Result<Option<Vec<u8>>> {
         let Some(header) = self.clr_header()? else {
             return Ok(None);
@@ -315,7 +317,7 @@ impl PeImage {
             .ok_or_else(|| Error::invalid_rva(header.metadata_rva))
     }
 
-    /// Parse the Rich header (if present) from the DOS stub.
+    /// Parse the Rich header from the DOS stub, if the header is present.
     #[must_use]
     pub fn rich_header(&self) -> Option<crate::rich::RichHeader> {
         let pe_offset = usize::try_from(self.dos_header.e_lfanew).ok()?;
@@ -330,7 +332,7 @@ impl PeImage {
         crate::rich::RichHeader::parse(&bytes)
     }
 
-    /// Parse the exception directory using the current machine's ABI.
+    /// Parse the exception directory with the ABI of the image's machine type.
     ///
     /// Returns `Ok(None)` if the exception data directory is absent.
     ///
@@ -357,10 +359,10 @@ impl PeImage {
         .map(Some)
     }
 
-    /// Parse an AMD64 exception directory (`RUNTIME_FUNCTION[]`).
+    /// Parse an AMD64 exception directory (an array of `RUNTIME_FUNCTION`).
     ///
-    /// Prefer [`Self::exception_table`] for code that may inspect ARM-family
-    /// or otherwise architecture-specific images.
+    /// For code that can inspect ARM-family images or other architecture-specific images, use
+    /// [`Self::exception_table`].
     ///
     /// # Errors
     ///
@@ -376,17 +378,20 @@ impl PeImage {
         }
     }
 
-    /// Write an architecture-aware exception table.
+    /// Write an exception table for the image's architecture.
     ///
-    /// The table is appended to `target_section`, or to ".pdata", ".rdata", or
-    /// the last section. Returns the RVA where the table was written.
+    /// The function appends the table to `target_section`. If `target_section` is `None`, it
+    /// uses ".pdata", then ".rdata", then the last section. Returns the RVA of the table.
     ///
     /// # Errors
     ///
-    /// Returns an error if the data-directory table has no exception slot and
-    /// cannot be extended, if the table encoding does not match the PE machine
-    /// type, if the table cannot be serialized or exceeds `u32`, if no target
-    /// section exists, or if appending it breaks the image layout.
+    /// Returns an error in these conditions:
+    ///
+    /// - The data-directory table has no exception slot, and cannot be extended.
+    /// - The table encoding does not match the PE machine type.
+    /// - The table cannot be serialized, or its size exceeds `u32`.
+    /// - No target section exists.
+    /// - Appending the table breaks the image layout.
     pub fn update_exception_table(
         &mut self,
         table: &crate::exception::ExceptionTable,
@@ -449,16 +454,17 @@ impl PeImage {
         Ok(rva)
     }
 
-    /// Update the exception directory (`.pdata`).
+    /// Write the exception directory (the `.pdata` array of `RUNTIME_FUNCTION`).
     ///
-    /// Creates or replaces the exception directory with new function entries.
-    /// If `target_section` is `None`, uses ".pdata" or ".rdata" or the last section.
+    /// This function creates the exception directory with the new function entries, or replaces
+    /// the current one. If `target_section` is `None`, the function uses ".pdata", then
+    /// ".rdata", then the last section.
     ///
     /// # Arguments
-    /// * `directory` - The exception directory to write
-    /// * `target_section` - Optional section to place the exception data
+    /// * `directory` - The exception directory to write.
+    /// * `target_section` - The name of the section that gets the exception data (optional).
     ///
-    /// Returns the RVA where the exception directory was written.
+    /// Returns the RVA of the new exception directory.
     ///
     /// # Errors
     ///
@@ -475,7 +481,7 @@ impl PeImage {
         use crate::exception::ExceptionBuilder;
         self.ensure_data_directory_slot(DataDirectoryType::Exception)?;
 
-        // Find target section
+        // Find the target section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
@@ -494,28 +500,29 @@ impl PeImage {
             return Err(crate::Error::invalid_section(&section_name));
         };
 
-        // Build exception data
+        // Build the exception data.
         let (data, dir_size) = ExceptionBuilder::try_build_from(directory)?;
 
-        // Calculate append RVA
+        // Get the RVA for the appended data.
         let append_rva = self.prepare_section_append(section_idx)?;
 
-        // Append data to section
+        // Append the data to the section.
         self.commit_section_append(section_idx, append_rva, &data)?;
         self.set_data_directory(DataDirectoryType::Exception, append_rva, dir_size);
 
         Ok(append_rva)
     }
 
-    /// Parse the load config directory.
+    /// Parse the load config directory (`IMAGE_LOAD_CONFIG_DIRECTORY32` or
+    /// `IMAGE_LOAD_CONFIG_DIRECTORY64`).
     ///
-    /// The Windows loader reads the structure through its own `Size` field,
-    /// not through the size of the data directory. Linkers for 32-bit images
-    /// write a directory size of 0x40 for the loader of Windows XP, and a
-    /// larger `Size` for the fields that later versions read. This reader
-    /// therefore reads `Size` bytes at the directory address. A zero `Size`
-    /// keeps the directory size. A structure that the mapped image cannot hold
-    /// is an error.
+    /// The Windows loader reads the structure through its own `Size` field. It does not use the
+    /// size in the data directory. For 32-bit images, linkers write a directory size of 0x40 for
+    /// the Windows XP loader. They write a larger `Size` for the fields that later versions read.
+    ///
+    /// Thus this function reads `Size` bytes at the directory RVA. If `Size` is zero, the
+    /// function uses the directory size. If the mapped image cannot hold the structure, the
+    /// function returns an error.
     ///
     /// Returns `Ok(None)` if the load config data directory is absent.
     ///
@@ -548,16 +555,18 @@ impl PeImage {
         )?))
     }
 
-    /// Update the load config directory.
+    /// Write the load config directory (`IMAGE_LOAD_CONFIG_DIRECTORY32` or
+    /// `IMAGE_LOAD_CONFIG_DIRECTORY64`).
     ///
-    /// Creates or replaces the `LoadConfig` directory with new data.
-    /// If `target_section` is `None`, uses ".rdata" or the last section.
+    /// This function creates the `LoadConfig` directory, or replaces the current one. If
+    /// `target_section` is `None`, the function uses ".rdata". If ".rdata" does not exist, it
+    /// uses the last section.
     ///
     /// # Arguments
-    /// * `config` - The `LoadConfig` directory to write
-    /// * `target_section` - Optional section to place the `LoadConfig` data
+    /// * `config` - The `LoadConfig` directory to write.
+    /// * `target_section` - The name of the section that gets the `LoadConfig` data (optional).
     ///
-    /// Returns the RVA where the `LoadConfig` directory was written.
+    /// Returns the RVA of the new `LoadConfig` directory.
     ///
     /// # Errors
     ///
@@ -574,7 +583,7 @@ impl PeImage {
         use crate::loadconfig::LoadConfigBuilder;
         self.ensure_data_directory_slot(DataDirectoryType::LoadConfig)?;
 
-        // Find target section
+        // Find the target section.
         let section_name: String = target_section
             .map(str::to_string)
             .or_else(|| {
@@ -591,14 +600,14 @@ impl PeImage {
             return Err(crate::Error::invalid_section(&section_name));
         };
 
-        // Build LoadConfig data
+        // Build the LoadConfig data.
         let builder = LoadConfigBuilder::new(self.is_64bit());
         let (data, dir_size) = builder.try_build(config)?;
 
-        // Calculate append RVA
+        // Get the RVA for the appended data.
         let append_rva = self.prepare_section_append(section_idx)?;
 
-        // Append data to section
+        // Append the data to the section.
         self.commit_section_append(section_idx, append_rva, &data)?;
         self.set_data_directory(DataDirectoryType::LoadConfig, append_rva, dir_size);
 

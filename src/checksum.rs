@@ -1,15 +1,16 @@
 //! PE checksum calculation.
 //!
-//! The PE checksum algorithm is used to verify integrity of PE files,
-//! particularly for drivers and system files.
+//! The PE checksum lets a tool verify the integrity of a PE file. Drivers and system files
+//! usually have a checksum.
 
 /// Calculate the PE checksum for a file.
 ///
-/// The algorithm:
-/// 1. Sum all 16-bit words, using 32-bit arithmetic with carry-add
-/// 2. Skip the checksum field itself (at offset `checksum_offset`)
-/// 3. Fold the result to 16 bits
-/// 4. Add the file size (modulo 2^32)
+/// `checksum_offset` is the file offset of the `CheckSum` field. The algorithm:
+///
+/// 1. Add all 16-bit words. Use 32-bit arithmetic with an end-around carry.
+/// 2. Skip the 4-byte checksum field at `checksum_offset`.
+/// 3. Fold the result to 16 bits.
+/// 4. Add the file size (modulo 2^32).
 #[must_use]
 pub fn calculate_checksum(data: &[u8], checksum_offset: usize) -> u32 {
     // Folding after every addition keeps `sum` within 16 bits, so adding a
@@ -21,19 +22,19 @@ pub fn calculate_checksum(data: &[u8], checksum_offset: usize) -> u32 {
     let skip = checksum_offset..checksum_offset.saturating_add(4);
     let (words, tail) = data.as_chunks::<2>();
     for (offset, word) in (0..len).step_by(2).zip(words) {
-        // Skip the checksum field (4 bytes at checksum_offset)
+        // Skip the checksum field (4 bytes at checksum_offset).
         if skip.contains(&offset) {
             continue;
         }
         sum = fold_carry(sum + u32::from(u16::from_le_bytes(*word)));
     }
 
-    // Handle odd byte at end
+    // Add the odd byte at the end.
     if let [byte] = tail {
         sum = fold_carry(sum + u32::from(*byte));
     }
 
-    // Add file size; the algorithm uses only its low 32 bits.
+    // Add the file size. The algorithm uses only the low 32 bits.
     let [b0, b1, b2, b3, ..] = len.to_le_bytes();
     let size_low = u32::from_le_bytes([b0, b1, b2, b3]);
     sum.wrapping_add(size_low)
@@ -47,16 +48,18 @@ const fn fold_carry(mut sum: u32) -> u32 {
     sum
 }
 
-/// Get the file offset of the `CheckSum` field in the optional header.
+/// Get the file offset of the `CheckSum` field in the optional header
+/// (`IMAGE_OPTIONAL_HEADER32` or `IMAGE_OPTIONAL_HEADER64`).
 ///
-/// Returns `None` if the PE is malformed or doesn't have an optional header.
+/// Returns `None` if the PE is malformed or does not have an optional header.
 #[must_use]
 pub fn checksum_field_offset(data: &[u8]) -> Option<usize> {
-    // DOS header e_lfanew is at offset 0x3C
+    // The DOS header field e_lfanew is at file offset 0x3C.
     let e_lfanew = data.get(0x3C..)?.first_chunk::<4>()?;
     let pe_offset = usize::try_from(u32::from_le_bytes(*e_lfanew)).ok()?;
 
-    // PE signature (4) + COFF header (20) + checksum is at offset 64 in optional header
+    // Skip the PE signature (4) and the COFF header (20). The checksum is at offset 64 in the
+    // optional header.
     let checksum_offset = pe_offset.checked_add(4 + 20 + 64)?;
 
     if checksum_offset.checked_add(4)? > data.len() {
@@ -68,7 +71,7 @@ pub fn checksum_field_offset(data: &[u8]) -> Option<usize> {
 
 /// Calculate and return the checksum for PE data.
 ///
-/// Returns `None` if the checksum field offset cannot be determined.
+/// Returns `None` if this function cannot find the file offset of the checksum field.
 #[must_use]
 pub fn compute_pe_checksum(data: &[u8]) -> Option<u32> {
     let offset = checksum_field_offset(data)?;

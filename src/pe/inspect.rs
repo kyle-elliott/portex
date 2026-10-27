@@ -5,25 +5,25 @@ use crate::section::Section;
 use crate::{Error, Result};
 
 impl PeImage {
-    /// Check if this is a 64-bit PE file.
+    /// Return `true` if this is a 64-bit (PE32+) image.
     #[must_use]
     pub fn is_64bit(&self) -> bool {
         self.optional_header.is_pe32plus()
     }
 
-    /// Check if this is a DLL.
+    /// Return `true` if this image is a DLL.
     #[must_use]
     pub fn is_dll(&self) -> bool {
         self.coff_header.is_dll()
     }
 
-    /// Get a section by name.
+    /// Return the section with the given name.
     #[must_use]
     pub fn section_by_name(&self, name: &str) -> Option<&Section> {
         self.sections.iter().find(|s| s.name() == name)
     }
 
-    /// Get a mutable section by name.
+    /// Return the section with the given name, as a mutable reference.
     pub fn section_by_name_mut(&mut self, name: &str) -> Option<&mut Section> {
         self.sections.iter_mut().find(|s| s.name() == name)
     }
@@ -34,20 +34,22 @@ impl PeImage {
         self.sections.iter().find(|s| s.contains_rva(rva))
     }
 
-    /// Find the mutable section containing an RVA.
+    /// Find the section that contains an RVA, as a mutable reference.
     #[must_use]
     pub fn section_by_rva_mut(&mut self, rva: u32) -> Option<&mut Section> {
         self.sections.iter_mut().find(|s| s.contains_rva(rva))
     }
 
-    /// Read data at an RVA.
+    /// Read `len` bytes at an RVA from one section.
     #[must_use]
     pub fn read_at_rva(&self, rva: u32, len: usize) -> Option<&[u8]> {
         self.section_by_rva(rva)?.data_at_rva(rva, len)
     }
 
-    /// Read an owned RVA range, including ranges in the PE headers and ranges
-    /// that cross contiguous section boundaries.
+    /// Read `len` bytes at an RVA into a new buffer.
+    ///
+    /// The range can be in the PE headers. It can also cross the boundary between contiguous
+    /// sections.
     #[must_use]
     pub fn read_rva(&self, rva: u32, len: usize) -> Option<Vec<u8>> {
         if len == 0 {
@@ -98,7 +100,7 @@ impl PeImage {
         Some(output)
     }
 
-    /// Test whether an RVA range is available without allocating or copying it.
+    /// Check if an RVA range is available, without allocating or copying it.
     #[must_use]
     pub fn contains_rva_range(&self, rva: u32, len: usize) -> bool {
         if len == 0 {
@@ -155,7 +157,7 @@ impl PeImage {
         true
     }
 
-    /// Write data at an RVA.
+    /// Write data at an RVA in one section.
     #[must_use]
     pub fn write_at_rva(&mut self, rva: u32, data: &[u8]) -> Option<()> {
         let section = self.section_by_rva_mut(rva)?;
@@ -164,10 +166,11 @@ impl PeImage {
         Some(())
     }
 
-    /// Convert an RVA to an image-relative source offset for the requested layout.
+    /// Convert an RVA to a source offset for the given layout.
     ///
-    /// When using [`Self::read_from`] with a nonzero `base_offset`, add that base
-    /// to the returned value before reading from the original source.
+    /// The offset is relative to the start of the image. If you use [`Self::read_from`] with a
+    /// nonzero `base_offset`, add that base to the offset before you read from the original
+    /// source.
     #[must_use]
     pub fn rva_to_source_offset(&self, rva: u32, layout: SourceLayout) -> Option<u32> {
         if rva >= self.optional_header.size_of_image() {
@@ -187,7 +190,7 @@ impl PeImage {
         }
     }
 
-    /// Convert an RVA to a raw-file offset.
+    /// Convert an RVA to a file offset in the raw file.
     #[must_use]
     pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
         self.rva_to_source_offset(rva, SourceLayout::File)
@@ -197,20 +200,20 @@ impl PeImage {
     ///
     /// # Panics
     ///
-    /// Panics if [`Self::try_add_section`] fails, i.e. the image already has
-    /// [`MAX_NUMBER_OF_SECTIONS`] sections or the section data exceeds
-    /// `u32::MAX` bytes.
+    /// Panics if [`Self::try_add_section`] fails. This occurs if the image already has
+    /// [`MAX_NUMBER_OF_SECTIONS`] sections, or if the section data is larger than `u32::MAX`
+    /// bytes.
     pub fn add_section(&mut self, section: Section) {
         self.try_add_section(section)
             .expect("too many PE sections: use try_add_section() for fallible updates");
     }
 
-    /// Add a section while enforcing the executable-image section limit.
+    /// Add a section, and apply the section limit for executable images.
     ///
     /// # Errors
     ///
-    /// Returns an error if the image already has [`MAX_NUMBER_OF_SECTIONS`]
-    /// sections or the section data exceeds `u32::MAX` bytes.
+    /// Returns an error if the image already has [`MAX_NUMBER_OF_SECTIONS`] sections, or if
+    /// the section data is larger than `u32::MAX` bytes.
     pub fn try_add_section(&mut self, section: Section) -> Result<()> {
         if self.sections.len() >= MAX_NUMBER_OF_SECTIONS {
             return Err(Error::invalid_section(format!(
@@ -225,7 +228,7 @@ impl PeImage {
         Ok(())
     }
 
-    /// Remove a section by name.
+    /// Remove the section with the given name.
     pub fn remove_section(&mut self, name: &str) -> Option<Section> {
         let idx = self.sections.iter().position(|s| s.name() == name)?;
         let removed = self.sections.remove(idx);
@@ -234,67 +237,67 @@ impl PeImage {
         Some(removed)
     }
 
-    /// Get the entry point RVA.
+    /// Return the RVA of the entry point.
     #[must_use]
     pub fn entry_point(&self) -> u32 {
         self.optional_header.address_of_entry_point()
     }
 
-    /// Get the image base.
+    /// Return the preferred image base (a VA) from the optional header.
     #[must_use]
     pub fn image_base(&self) -> u64 {
         self.optional_header.image_base()
     }
 
-    /// Layout used by the source from which this image was parsed.
+    /// Return the layout of the source that this image was parsed from.
     #[must_use]
     pub const fn source_layout(&self) -> SourceLayout {
         self.source_layout
     }
 
-    /// Actual mapped base, or the preferred image base when not explicitly set.
+    /// Return the actual mapped base (a VA). If it is not set, return the preferred image base.
     #[must_use]
     pub fn runtime_image_base(&self) -> u64 {
         self.runtime_image_base.unwrap_or_else(|| self.image_base())
     }
 
-    /// Override the actual mapped base used for absolute-address directories.
+    /// Set the actual mapped base (a VA). Directories that contain VAs use this base.
     pub fn set_runtime_image_base(&mut self, runtime_image_base: u64) {
         self.runtime_image_base = Some(runtime_image_base);
     }
 
-    /// Convert an RVA to a VA using the actual mapped base when known.
+    /// Convert an RVA to a VA with the actual mapped base, if it is known.
     #[must_use]
     pub fn rva_to_runtime_va(&self, rva: u32) -> Option<u64> {
         self.rva_to_va_at(rva, self.runtime_image_base())
     }
 
-    /// Convert a runtime VA to an RVA using the actual mapped base when known.
+    /// Convert a runtime VA to an RVA with the actual mapped base, if it is known.
     #[must_use]
     pub fn runtime_va_to_rva(&self, va: u64) -> Option<u32> {
         self.va_to_rva_at(va, self.runtime_image_base())
     }
 
-    /// Convert an RVA to a VA using the preferred image base.
+    /// Convert an RVA to a VA with the preferred image base.
     #[must_use]
     pub fn rva_to_va(&self, rva: u32) -> Option<u64> {
         self.rva_to_va_at(rva, self.image_base())
     }
 
-    /// Convert an RVA to a VA using an explicit runtime image base.
+    /// Convert an RVA to a VA with the given runtime image base (a VA).
     #[must_use]
     pub fn rva_to_va_at(&self, rva: u32, runtime_image_base: u64) -> Option<u64> {
         (rva < self.optional_header.size_of_image())
             .then(|| runtime_image_base.checked_add(u64::from(rva)))?
     }
 
-    /// Convert a preferred-base VA to an RVA.
+    /// Convert a VA that uses the preferred image base to an RVA.
     #[must_use]
     pub fn va_to_rva(&self, va: u64) -> Option<u32> {
         self.va_to_rva_at(va, self.image_base())
     }
 
-    /// Convert a VA to an RVA using an explicit runtime image base.
+    /// Convert a VA to an RVA with the given runtime image base (a VA).
     #[must_use]
     pub fn va_to_rva_at(&self, va: u64, runtime_image_base: u64) -> Option<u32> {
         let relative = va.checked_sub(runtime_image_base)?;
@@ -302,18 +305,17 @@ impl PeImage {
         (rva < self.optional_header.size_of_image()).then_some(rva)
     }
 
-    /// Return the raw bytes covered by a standard RVA-based data directory.
+    /// Return the raw bytes of a standard data directory whose address is an RVA.
     ///
-    /// This is the lossless fallback for versioned or architecture-specific
-    /// directory formats. The Security directory is intentionally rejected
-    /// because its address is a file offset; use [`crate::PeFile::directory_data`]
-    /// for a complete raw-file view.
+    /// Use this as the lossless fallback for versioned or architecture-specific directory
+    /// formats. This function rejects the Security directory, because its address is a file
+    /// offset. For a full raw-file view, use [`crate::PeFile::directory_data`].
     ///
     /// # Errors
     ///
-    /// Returns an error if `dir_type` is the Security directory, if the entry
-    /// has only one of its address and size set, or if the directory's RVA
-    /// range is not readable from the image.
+    /// Returns an error if `dir_type` is the Security directory. Also returns an error if the
+    /// entry has only one of its RVA and size set, or if the image cannot supply the RVA range
+    /// of the directory.
     pub fn directory_data(
         &self,
         dir_type: crate::data_dir::DataDirectoryType,
@@ -347,7 +349,7 @@ impl PeImage {
             })
     }
 
-    /// Get a data directory entry by type.
+    /// Return the data directory entry (`IMAGE_DATA_DIRECTORY`) of the given type.
     #[must_use]
     pub fn data_directory(
         &self,
@@ -358,7 +360,7 @@ impl PeImage {
             .get(dir_type.as_index())
     }
 
-    /// Get a data directory entry by index (for advanced use).
+    /// Return the data directory entry (`IMAGE_DATA_DIRECTORY`) at an index (advanced use).
     #[must_use]
     pub fn data_directory_by_index(&self, index: usize) -> Option<&crate::data_dir::DataDirectory> {
         self.optional_header.data_directories().get(index)
@@ -366,12 +368,12 @@ impl PeImage {
 
     /// Parse the import table.
     ///
-    /// Returns an empty table when the import directory is absent.
+    /// Returns an empty table if the import directory is absent.
     ///
     /// # Errors
     ///
-    /// Returns an error if the import descriptors, thunks, or names are
-    /// unreadable or malformed.
+    /// Returns an error if the import descriptors (`IMAGE_IMPORT_DESCRIPTOR`), thunks, or names
+    /// cannot be read or are malformed.
     #[must_use = "parsing returns an import table that should be used"]
     pub fn imports(&self) -> Result<crate::import::ImportTable> {
         use crate::data_dir::DataDirectoryType;
@@ -395,12 +397,12 @@ impl PeImage {
 
     /// Parse the export table.
     ///
-    /// Returns an empty table when the export directory is absent.
+    /// Returns an empty table if the export directory is absent.
     ///
     /// # Errors
     ///
-    /// Returns an error if the `IMAGE_EXPORT_DIRECTORY` or its address, name,
-    /// or ordinal tables are unreadable or malformed.
+    /// Returns an error if the `IMAGE_EXPORT_DIRECTORY` or its address, name, or ordinal tables
+    /// cannot be read or are malformed.
     #[must_use = "parsing returns an export table that should be used"]
     pub fn exports(&self) -> Result<crate::export::ExportTable> {
         use crate::data_dir::DataDirectoryType;
@@ -417,13 +419,14 @@ impl PeImage {
         }
     }
 
-    /// Parse the relocation table.
+    /// Parse the base relocation table.
     ///
-    /// Returns an empty table when the base-relocation directory is absent.
+    /// Returns an empty table if the base relocation directory is absent.
     ///
     /// # Errors
     ///
-    /// Returns an error if a base-relocation block is unreadable or malformed.
+    /// Returns an error if a base relocation block (`IMAGE_BASE_RELOCATION`) cannot be read or
+    /// is malformed.
     #[must_use = "parsing returns a relocation table that should be used"]
     pub fn relocations(&self) -> Result<crate::reloc::RelocationTable> {
         use crate::data_dir::DataDirectoryType;
@@ -440,7 +443,7 @@ impl PeImage {
         }
     }
 
-    /// Update a data directory entry by type.
+    /// Set the RVA and size of the data directory entry of the given type.
     pub fn set_data_directory(
         &mut self,
         dir_type: crate::data_dir::DataDirectoryType,
@@ -450,13 +453,12 @@ impl PeImage {
         self.store_data_directory(dir_type.as_index(), rva, size);
     }
 
-    /// Update a data directory entry by index (for advanced use).
+    /// Set the RVA and size of the data directory entry at an index (advanced use).
     ///
     /// # Errors
     ///
-    /// Returns an error if `index` is too large for the data-directory array
-    /// to fit in an optional header whose size is limited by the `u16`
-    /// `SizeOfOptionalHeader` field.
+    /// Returns an error if `index` is too large. The `SizeOfOptionalHeader` field is a `u16`,
+    /// so the optional header cannot hold a data-directory array of that length.
     pub fn set_data_directory_by_index(&mut self, index: usize, rva: u32, size: u32) -> Result<()> {
         let base_size = match &self.optional_header {
             OptionalHeader::Pe32(_) => crate::optional::OptionalHeader32::BASE_SIZE,
@@ -472,8 +474,8 @@ impl PeImage {
         Ok(())
     }
 
-    /// Store a data-directory entry, growing the array and updating
-    /// `NumberOfRvaAndSizes` as needed. `index` must already be validated.
+    /// Store a data-directory entry. If necessary, grow the array and update
+    /// `NumberOfRvaAndSizes`. The caller must validate `index` first.
     fn store_data_directory(&mut self, index: usize, rva: u32, size: u32) {
         let dirs = self.optional_header.data_directories_mut();
         if dirs.len() <= index {
@@ -500,24 +502,27 @@ impl PeImage {
         Ok(())
     }
 
-    /// Clear a data directory entry.
+    /// Clear the data directory entry of the given type.
     pub fn clear_data_directory(&mut self, dir_type: crate::data_dir::DataDirectoryType) {
         self.set_data_directory(dir_type, 0, 0);
     }
 
-    /// Append data to a section and return the RVA where it was placed.
-    /// Returns None if the section doesn't exist.
+    /// Append data to a section, and return the RVA of the data.
+    ///
+    /// Returns `None` if the section does not exist.
     pub fn append_to_section(&mut self, section_name: &str, data: &[u8]) -> Option<u32> {
         self.try_append_to_section(section_name, data).ok()
     }
 
-    /// Append data to a section with checked layout and address arithmetic.
+    /// Append data to a section, with checked layout and address calculation.
     ///
     /// # Errors
     ///
-    /// Returns an error if no section is named `section_name`, if layout
-    /// recomputation fails, or if the appended data overflows the section's
-    /// size or RVA range.
+    /// Returns an error in these conditions:
+    ///
+    /// - No section has the name `section_name`.
+    /// - The layout calculation fails.
+    /// - The appended data overflows the size or the RVA range of the section.
     pub fn try_append_to_section(&mut self, section_name: &str, data: &[u8]) -> Result<u32> {
         self.try_update_layout()?;
         let section = self

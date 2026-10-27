@@ -4,10 +4,10 @@ use super::{ExceptionDirectory, RuntimeFunction};
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// Builder for exception directories (.pdata).
+/// A builder for the x64 exception directory (`.pdata`).
 ///
-/// Exception directories contain runtime function entries for x64 SEH.
-/// This builder helps create and manage these entries.
+/// The exception directory contains runtime function entries for x64 SEH. Use this builder to
+/// create and manage these entries.
 ///
 /// # Example
 ///
@@ -36,7 +36,7 @@ impl ExceptionBuilder {
         Self::default()
     }
 
-    /// Create from an existing exception directory.
+    /// Create a builder from an existing exception directory.
     #[must_use]
     pub fn from_directory(directory: ExceptionDirectory) -> Self {
         Self { directory }
@@ -59,11 +59,11 @@ impl ExceptionBuilder {
         self
     }
 
-    /// Build the exception directory.
+    /// Sort and build the exception directory.
     ///
-    /// Returns (data, size) where:
-    /// - `data` is the raw bytes to write to the section
-    /// - `size` is the total size of the exception directory
+    /// Returns `(data, size)`:
+    /// - `data` is the raw bytes to write to the section.
+    /// - `size` is the total size of the exception directory in bytes.
     ///
     /// # Panics
     /// Panics if [`Self::try_build`] fails.
@@ -77,7 +77,7 @@ impl ExceptionBuilder {
     /// # Errors
     /// Returns an error if the directory fails validation.
     pub fn try_build(&mut self) -> Result<(Vec<u8>, u32)> {
-        // Sort by begin address (required for binary search)
+        // Sort by begin address. A binary search requires this order.
         self.directory.sort();
         let data = self.directory.try_to_bytes()?;
         let size = u32::try_from(data.len())
@@ -85,7 +85,7 @@ impl ExceptionBuilder {
         Ok((data, size))
     }
 
-    /// Build from the existing directory without modification.
+    /// Sort a copy of `directory` and build it. This function does not change `directory`.
     ///
     /// # Panics
     /// Panics if [`Self::try_build_from`] fails.
@@ -108,19 +108,19 @@ impl ExceptionBuilder {
         Ok((data, size))
     }
 
-    /// Get the number of functions.
+    /// Return the number of functions.
     #[must_use]
     pub fn len(&self) -> usize {
         self.directory.len()
     }
 
-    /// Check if empty.
+    /// Return `true` if the builder has no functions.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.directory.is_empty()
     }
 
-    /// Calculate the size needed for the exception directory.
+    /// Calculate the exception directory size in bytes for `num_functions` entries.
     ///
     /// # Panics
     /// Panics if [`Self::try_calculate_size`] fails.
@@ -130,7 +130,7 @@ impl ExceptionBuilder {
             .expect("exception-directory size overflow: use try_calculate_size()")
     }
 
-    /// Calculate the size needed for `num_functions` entries.
+    /// Calculate the size in bytes for `num_functions` entries.
     ///
     /// # Errors
     /// Returns an error if the size overflows or exceeds `u32`.

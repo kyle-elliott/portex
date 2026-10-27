@@ -1,7 +1,7 @@
 //! Error types for PE parsing and writing.
 //!
-//! Errors include context information (file offset, RVA, structure name) to help
-//! diagnose issues when parsing or writing PE files.
+//! An error can have a context: a file offset, an RVA, a structure name and details. Use the
+//! context to find the cause of a problem when you parse or write a PE file.
 //!
 //! # Example
 //!
@@ -29,14 +29,14 @@ use std::io;
 /// Result type alias for portex operations.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// Context information about where an error occurred.
+/// Information about the location of an error.
 #[derive(Debug, Clone)]
 pub struct ErrorContext {
     /// File offset where the error occurred (if known).
     pub file_offset: Option<u64>,
     /// RVA where the error occurred (if known).
     pub rva: Option<u32>,
-    /// Name of the structure being parsed (if known).
+    /// Name of the structure that the parser was reading (if known).
     pub structure: Option<String>,
     /// Additional details about the error.
     pub details: Option<String>,
@@ -82,7 +82,7 @@ impl ErrorContext {
         self
     }
 
-    /// Check if context has any information.
+    /// Return `true` if the context has no information.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.file_offset.is_none()
@@ -117,7 +117,7 @@ impl fmt::Display for ErrorContext {
     }
 }
 
-/// Errors that can occur during PE parsing or writing.
+/// An error from parsing or writing a PE file.
 #[derive(Debug)]
 pub struct Error {
     /// The error kind.
@@ -130,7 +130,7 @@ pub struct Error {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ErrorKind {
-    /// I/O error during read/write operations.
+    /// I/O error from a read or write operation.
     #[cfg(feature = "std")]
     Io(io::Error),
     /// Invalid DOS signature (expected "MZ").
@@ -141,7 +141,7 @@ pub enum ErrorKind {
     InvalidMachineType(u16),
     /// Invalid optional header magic.
     InvalidOptionalHeaderMagic(u16),
-    /// Buffer too small to contain expected data.
+    /// The buffer is too small for the expected data.
     BufferTooSmall {
         /// Number of bytes required.
         expected: usize,
@@ -154,12 +154,12 @@ pub enum ErrorKind {
     InvalidDataDirectory(String),
     /// Offset out of bounds.
     OffsetOutOfBounds {
-        /// Offending offset.
+        /// The offset that is out of bounds.
         offset: usize,
-        /// Size of the region the offset was checked against.
+        /// Size of the region that the check used.
         size: usize,
     },
-    /// Invalid RVA (could not read at address).
+    /// Invalid RVA (the data at this address cannot be read).
     InvalidRva(u32),
     /// Invalid UTF-8 string.
     InvalidUtf8,
@@ -280,7 +280,7 @@ impl Error {
         Self::new(ErrorKind::InvalidUtf8)
     }
 
-    /// Create a Generic error with a message.
+    /// Create a `Generic` error with a message.
     pub fn generic(msg: impl Into<String>) -> Self {
         Self::new(ErrorKind::Generic(msg.into()))
     }

@@ -15,12 +15,12 @@ impl PeImage {
             .expect("checksum calculation failed: use try_calculate_checksum()")
     }
 
-    /// Calculate the checksum without panicking on invalid edited state.
+    /// Calculate the checksum. Return an error, not a panic, for an invalid edited state.
     ///
     /// # Errors
     ///
-    /// Returns an error if [`Self::try_build`] fails or the serialized image
-    /// is too short to contain the optional-header `CheckSum` field.
+    /// Returns an error if [`Self::try_build`] fails, or if the serialized image is too short to
+    /// contain the `CheckSum` field of the optional header.
     pub fn try_calculate_checksum(&self) -> Result<u32> {
         let data = self.try_build()?;
         crate::checksum::compute_pe_checksum(&data)
@@ -37,7 +37,7 @@ impl PeImage {
             .expect("checksum update failed: use try_update_checksum()");
     }
 
-    /// Update the optional-header checksum without panicking.
+    /// Update the `CheckSum` field of the optional header. Return an error, not a panic.
     ///
     /// # Errors
     ///
@@ -51,12 +51,11 @@ impl PeImage {
         Ok(())
     }
 
-    /// Recompute derived layout fields and the checksum.
+    /// Recalculate the derived layout fields and the checksum.
     ///
     /// # Errors
     ///
-    /// Returns an error if layout recomputation or
-    /// [`Self::try_update_checksum`] fails.
+    /// Returns an error if the layout recalculation or [`Self::try_update_checksum`] fails.
     pub fn try_finalize(&mut self) -> Result<()> {
         self.try_update_layout()?;
         self.try_update_checksum()
@@ -72,19 +71,21 @@ impl PeImage {
     /// - Bound and delay imports
     /// - TLS, debug, exception, and load-configuration tables
     ///
-    /// This is useful after making structural changes to sections to ensure all
-    /// data directory content is properly aligned and laid out.
+    /// Use this method after structural changes to sections. It makes sure that all data
+    /// directory content has the correct alignment and layout.
     ///
-    /// The operation is atomic and appends rebuilt tables to one section. When
-    /// no target is supplied, the last section is used so existing section RVAs
-    /// do not move. It intentionally does not touch Security (raw-file state),
-    /// CLR metadata, or directories whose encoding Portex does not own.
+    /// The operation is atomic. It appends the rebuilt tables to one section. If you do not
+    /// supply a target section, the method uses the last section, so that the RVAs of existing
+    /// sections do not move. The method intentionally does not touch these directories:
+    /// - Security (raw-file state)
+    /// - CLR metadata
+    /// - Directories with an encoding that Portex does not own
     ///
     /// # Errors
     ///
     /// Returns an error if any data directory fails to parse or rebuild.
     pub fn rebuild_supported_directories(&mut self, target_section: Option<&str>) -> Result<()> {
-        // Parse all directories first before modifying anything
+        // Parse all directories before you change anything.
         let imports = self.imports()?;
         let exports = self.exports()?;
         let relocations = self.relocations()?;
@@ -110,7 +111,7 @@ impl PeImage {
         let target_section = Some(selected_section.as_str());
         let mut rebuilt = self.clone();
 
-        // Rebuild each one (only if non-empty)
+        // Rebuild each directory, but only if it is not empty.
         if !imports.is_empty() {
             rebuilt.update_imports(&imports, target_section)?;
         }
@@ -149,7 +150,7 @@ impl PeImage {
         Ok(())
     }
 
-    /// Read resource data at the given RVA.
+    /// Read the resource data at the RVA `resource.data_rva`.
     #[must_use]
     pub fn read_resource_data(&self, resource: &crate::resource::Resource) -> Option<Vec<u8>> {
         self.read_rva(resource.data_rva, resource.size as usize)

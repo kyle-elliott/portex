@@ -1,7 +1,7 @@
 //! CLR (Common Language Runtime) header parsing.
 //!
-//! This module provides minimal CLR header parsing for .NET assemblies.
-//! The CLI header (`IMAGE_COR20_HEADER`) is located via data directory index 14 (`ClrRuntime`).
+//! This module gives minimal CLR header parsing for .NET assemblies. Data directory index 14
+//! (`ClrRuntime`) gives the location of the CLI header (`IMAGE_COR20_HEADER`).
 //!
 //! For full metadata parsing (BSJB, streams, tables), see the `clrmeta` crate.
 //!
@@ -29,48 +29,48 @@ use crate::{Error, Result};
 
 /// CLI header (`IMAGE_COR20_HEADER`).
 ///
-/// This 72-byte structure is the entry point for .NET metadata.
-/// Located via `DataDirectoryType::ClrRuntime` (index 14).
+/// This 72-byte structure is the entry point for .NET metadata. The data directory
+/// `DataDirectoryType::ClrRuntime` (index 14) gives its location.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct CliHeader {
-    /// Size of the header (always 72).
+    /// The size of the header in bytes (always 72).
     pub cb: u32,
-    /// Major runtime version required.
+    /// The major runtime version that the assembly requires.
     pub major_runtime_version: u16,
-    /// Minor runtime version required.
+    /// The minor runtime version that the assembly requires.
     pub minor_runtime_version: u16,
-    /// RVA of metadata (BSJB).
+    /// The RVA of the metadata (BSJB).
     pub metadata_rva: u32,
-    /// Size of metadata.
+    /// The size of the metadata in bytes.
     pub metadata_size: u32,
-    /// Flags (`COMIMAGE_FLAGS_*`).
+    /// The flags (`COMIMAGE_FLAGS_*`).
     pub flags: u32,
-    /// Entry point token (MethodDef/File) or native entry point RVA.
+    /// The entry point token (`MethodDef` or `File`), or the RVA of the native entry point.
     pub entry_point_token_or_rva: u32,
-    /// RVA of resources.
+    /// The RVA of the resources.
     pub resources_rva: u32,
-    /// Size of resources.
+    /// The size of the resources in bytes.
     pub resources_size: u32,
-    /// RVA of strong name signature.
+    /// The RVA of the strong name signature.
     pub strong_name_signature_rva: u32,
-    /// Size of strong name signature.
+    /// The size of the strong name signature in bytes.
     pub strong_name_signature_size: u32,
-    /// RVA of code manager table (reserved).
+    /// The RVA of the code manager table (reserved).
     pub code_manager_table_rva: u32,
-    /// Size of code manager table.
+    /// The size of the code manager table in bytes.
     pub code_manager_table_size: u32,
-    /// RVA of `VTable` fixups.
+    /// The RVA of the `VTable` fixups.
     pub vtable_fixups_rva: u32,
-    /// Size of `VTable` fixups.
+    /// The size of the `VTable` fixups in bytes.
     pub vtable_fixups_size: u32,
-    /// RVA of export address table jumps.
+    /// The RVA of the export address table jumps.
     pub export_address_table_jumps_rva: u32,
-    /// Size of export address table jumps.
+    /// The size of the export address table jumps in bytes.
     pub export_address_table_jumps_size: u32,
-    /// RVA of managed native header (reserved).
+    /// The RVA of the managed native header (reserved).
     pub managed_native_header_rva: u32,
-    /// Size of managed native header.
+    /// The size of the managed native header in bytes.
     pub managed_native_header_size: u32,
 }
 
@@ -80,22 +80,22 @@ impl CliHeader {
     /// Size of the CLI header in bytes, as the `u32` stored in `cb`.
     pub const SIZE_U32: u32 = 72;
 
-    /// `COMIMAGE_FLAGS_ILONLY` - Contains only IL code.
+    /// `COMIMAGE_FLAGS_ILONLY`: the image contains only IL code.
     pub const FLAG_ILONLY: u32 = 0x0000_0001;
-    /// `COMIMAGE_FLAGS_32BITREQUIRED` - Requires 32-bit platform.
+    /// `COMIMAGE_FLAGS_32BITREQUIRED`: the image requires a 32-bit platform.
     pub const FLAG_32BITREQUIRED: u32 = 0x0000_0002;
-    /// `COMIMAGE_FLAGS_IL_LIBRARY` - IL library (not executable).
+    /// `COMIMAGE_FLAGS_IL_LIBRARY`: the image is an IL library, not an executable.
     pub const FLAG_IL_LIBRARY: u32 = 0x0000_0004;
-    /// `COMIMAGE_FLAGS_STRONGNAMESIGNED` - Strong-name signed.
+    /// `COMIMAGE_FLAGS_STRONGNAMESIGNED`: the image has a strong name signature.
     pub const FLAG_STRONGNAMESIGNED: u32 = 0x0000_0008;
-    /// `COMIMAGE_FLAGS_NATIVE_ENTRYPOINT` - Entry point is native RVA (not token).
+    /// `COMIMAGE_FLAGS_NATIVE_ENTRYPOINT`: the entry point is a native RVA, not a token.
     pub const FLAG_NATIVE_ENTRYPOINT: u32 = 0x0000_0010;
-    /// `COMIMAGE_FLAGS_TRACKDEBUGDATA` - Track debug data.
+    /// `COMIMAGE_FLAGS_TRACKDEBUGDATA`: track debug data.
     pub const FLAG_TRACKDEBUGDATA: u32 = 0x0001_0000;
-    /// `COMIMAGE_FLAGS_32BITPREFERRED` - Prefers 32-bit platform.
+    /// `COMIMAGE_FLAGS_32BITPREFERRED`: the image prefers a 32-bit platform.
     pub const FLAG_32BITPREFERRED: u32 = 0x0002_0000;
 
-    /// Parse CLI header from a byte slice.
+    /// Parse a CLI header from a byte slice.
     ///
     /// # Errors
     ///
@@ -151,31 +151,31 @@ impl CliHeader {
         })
     }
 
-    /// Check if the assembly contains only IL code.
+    /// Return `true` if the assembly contains only IL code.
     #[must_use]
     pub fn is_il_only(&self) -> bool {
         self.flags & Self::FLAG_ILONLY != 0
     }
 
-    /// Check if the assembly requires 32-bit platform.
+    /// Return `true` if the assembly requires a 32-bit platform.
     #[must_use]
     pub fn is_32bit_required(&self) -> bool {
         self.flags & Self::FLAG_32BITREQUIRED != 0
     }
 
-    /// Check if the assembly prefers 32-bit platform.
+    /// Return `true` if the assembly prefers a 32-bit platform.
     #[must_use]
     pub fn is_32bit_preferred(&self) -> bool {
         self.flags & Self::FLAG_32BITPREFERRED != 0
     }
 
-    /// Check if the assembly is strong-name signed.
+    /// Return `true` if the assembly has a strong name signature.
     #[must_use]
     pub fn is_strong_name_signed(&self) -> bool {
         self.flags & Self::FLAG_STRONGNAMESIGNED != 0
     }
 
-    /// Check if the entry point is a native RVA (vs metadata token).
+    /// Return `true` if the entry point is a native RVA, not a metadata token.
     #[must_use]
     pub fn has_native_entry_point(&self) -> bool {
         self.flags & Self::FLAG_NATIVE_ENTRYPOINT != 0
@@ -236,9 +236,9 @@ impl Default for CliHeader {
     }
 }
 
-/// Builder for CLI headers.
+/// A builder for CLI headers.
 ///
-/// This provides a fluent interface for building CLI (COR20) headers for .NET assemblies.
+/// This builder gives a fluent interface to build CLI (COR20) headers for .NET assemblies.
 ///
 /// # Example
 ///
@@ -261,7 +261,7 @@ pub struct CliBuilder {
 }
 
 impl CliBuilder {
-    /// Create a new CLI builder with default values.
+    /// Create a CLI builder with default values.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -269,7 +269,7 @@ impl CliBuilder {
         }
     }
 
-    /// Create from an existing CLI header.
+    /// Create a builder from an existing CLI header.
     #[must_use]
     pub fn from_header(header: CliHeader) -> Self {
         Self { header }
@@ -289,14 +289,14 @@ impl CliBuilder {
         self
     }
 
-    /// Set the native entry point RVA (rare, for mixed-mode assemblies).
+    /// Set the RVA of the native entry point. Mixed-mode assemblies use this, but it is rare.
     pub fn native_entry_point(&mut self, rva: u32) -> &mut Self {
         self.header.entry_point_token_or_rva = rva;
         self.header.flags |= CliHeader::FLAG_NATIVE_ENTRYPOINT;
         self
     }
 
-    /// Set whether this is an IL-only assembly.
+    /// Set whether the assembly is IL-only.
     pub fn il_only(&mut self, value: bool) -> &mut Self {
         if value {
             self.header.flags |= CliHeader::FLAG_ILONLY;
@@ -306,7 +306,7 @@ impl CliBuilder {
         self
     }
 
-    /// Set whether 32-bit is required.
+    /// Set whether the assembly requires a 32-bit platform.
     pub fn requires_32bit(&mut self, value: bool) -> &mut Self {
         if value {
             self.header.flags |= CliHeader::FLAG_32BITREQUIRED;
@@ -316,7 +316,7 @@ impl CliBuilder {
         self
     }
 
-    /// Set whether 32-bit is preferred.
+    /// Set whether the assembly prefers a 32-bit platform.
     pub fn prefers_32bit(&mut self, value: bool) -> &mut Self {
         if value {
             self.header.flags |= CliHeader::FLAG_32BITPREFERRED;
@@ -333,35 +333,34 @@ impl CliBuilder {
         self
     }
 
-    /// Set the strong name signature RVA and size.
+    /// Set the RVA and size of the strong name signature.
     pub fn strong_name_signature(&mut self, rva: u32, size: u32) -> &mut Self {
         self.header.strong_name_signature_rva = rva;
         self.header.strong_name_signature_size = size;
         self
     }
 
-    /// Set the `VTable` fixups RVA and size.
+    /// Set the RVA and size of the `VTable` fixups.
     pub fn vtable_fixups(&mut self, rva: u32, size: u32) -> &mut Self {
         self.header.vtable_fixups_rva = rva;
         self.header.vtable_fixups_size = size;
         self
     }
 
-    /// Set raw flags value.
+    /// Set the raw flags value.
     pub fn flags(&mut self, flags: u32) -> &mut Self {
         self.header.flags = flags;
         self
     }
 
-    /// Build the CLI header.
-    /// Returns (data, size).
+    /// Build the CLI header. Returns `(data, size)`.
     #[must_use]
     pub fn build(&self) -> (Vec<u8>, u32) {
         let data = self.header.to_bytes().to_vec();
         (data, CliHeader::SIZE_U32)
     }
 
-    /// Get the built header.
+    /// Return the built header.
     #[must_use]
     pub fn into_header(self) -> CliHeader {
         self.header

@@ -1,6 +1,6 @@
 use super::*;
 
-/// Return a reader over `data` that starts at `base_rva`.
+/// Return a reader over `data` that starts at the RVA `base_rva`.
 fn reader(data: &[u8], base_rva: u32) -> impl Fn(u32, usize) -> Option<Vec<u8>> + '_ {
     move |rva: u32, len: usize| {
         let offset = usize::try_from(rva.checked_sub(base_rva)?).ok()?;
@@ -40,18 +40,18 @@ fn test_export_directory_roundtrip() {
 
 #[test]
 fn test_export_table_builder_roundtrip() {
-    // Create an export table
+    // Create an export table.
     let mut table = ExportTable::default();
     table.set_dll_name("test.dll");
     table.set_base(1);
     table.add_export(Some("FunctionA"), 0x1000);
     table.add_export(Some("FunctionB"), 0x2000);
-    table.add_export(None, 0x3000); // Export by ordinal only
+    table.add_export(None, 0x3000); // Export by ordinal only.
 
     assert_eq!(table.exports.len(), 3);
     assert_eq!(table.dll_name, "test.dll");
 
-    // Build the section
+    // Build the export data.
     let base_rva = 0x4000u32;
     let builder = ExportTableBuilder::new(base_rva);
     let size = ExportTableBuilder::calculate_size(&table);
@@ -61,12 +61,12 @@ fn test_export_table_builder_roundtrip() {
     assert_eq!(data.len(), size);
     assert!(export_size > 0);
 
-    // Parse the built data back
+    // Parse the built data again.
     let parsed = ExportTable::parse(base_rva, export_size, reader(&data, base_rva)).unwrap();
     assert_eq!(parsed.dll_name, "test.dll");
     assert_eq!(parsed.exports.len(), 3);
 
-    // Verify named exports
+    // Check the named exports.
     let func_a = parsed.find_by_name("FunctionA");
     assert!(func_a.is_some());
     if let ExportAddress::Rva(rva) = &func_a.unwrap().address {

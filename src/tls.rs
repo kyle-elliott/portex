@@ -1,7 +1,7 @@
-//! TLS (Thread Local Storage) directory parsing and building.
+//! Parse and build the TLS (thread local storage) directory.
 //!
-//! The TLS directory contains information about thread-local storage,
-//! including callbacks that are executed before the entry point.
+//! The TLS directory describes the thread local storage of an image. It also points to the
+//! TLS callbacks. The loader calls these callbacks before the entry point.
 //!
 //! # Examples
 //!
@@ -37,11 +37,11 @@ pub struct TlsDirectory32 {
     pub end_address_of_raw_data: u32,
     /// Address of the TLS index (VA).
     pub address_of_index: u32,
-    /// Address of TLS callback array (VA).
+    /// Address of the TLS callback array (VA).
     pub address_of_callbacks: u32,
-    /// Size of zero-filled area.
+    /// Size of the zero-filled area in bytes.
     pub size_of_zero_fill: u32,
-    /// Characteristics (reserved, typically 0).
+    /// Characteristics (reserved, usually 0).
     pub characteristics: u32,
 }
 
@@ -92,11 +92,11 @@ pub struct TlsDirectory64 {
     pub end_address_of_raw_data: u64,
     /// Address of the TLS index (VA).
     pub address_of_index: u64,
-    /// Address of TLS callback array (VA).
+    /// Address of the TLS callback array (VA).
     pub address_of_callbacks: u64,
-    /// Size of zero-filled area.
+    /// Size of the zero-filled area in bytes.
     pub size_of_zero_fill: u32,
-    /// Characteristics (reserved, typically 0).
+    /// Characteristics (reserved, usually 0).
     pub characteristics: u32,
 }
 
@@ -146,7 +146,7 @@ impl TlsDirectory64 {
     }
 }
 
-/// TLS Directory (either 32 or 64-bit).
+/// A TLS directory of a PE32 or PE32+ image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TlsDirectory {
     /// PE32 directory (`IMAGE_TLS_DIRECTORY32`).
@@ -156,7 +156,9 @@ pub enum TlsDirectory {
 }
 
 impl TlsDirectory {
-    /// Parse from bytes, selecting 32 or 64-bit based on flag.
+    /// Parse a TLS directory from bytes.
+    ///
+    /// `is_64bit` selects the 64-bit layout. Otherwise, the function uses the 32-bit layout.
     ///
     /// # Errors
     ///
@@ -169,7 +171,7 @@ impl TlsDirectory {
         }
     }
 
-    /// Serialize to bytes.
+    /// Serialize the directory to bytes.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
@@ -178,7 +180,7 @@ impl TlsDirectory {
         }
     }
 
-    /// Get the size of the TLS directory.
+    /// Return the size of the TLS directory in bytes.
     #[must_use]
     pub fn size(&self) -> usize {
         match self {
@@ -187,7 +189,7 @@ impl TlsDirectory {
         }
     }
 
-    /// Get the callbacks VA (Virtual Address).
+    /// Return the VA of the callback array.
     #[must_use]
     pub fn callbacks_va(&self) -> u64 {
         match self {
@@ -196,41 +198,42 @@ impl TlsDirectory {
         }
     }
 
-    /// Check if TLS has callbacks (non-zero address).
+    /// Return `true` if the callback array address is not zero.
     #[must_use]
     pub fn has_callbacks(&self) -> bool {
         self.callbacks_va() != 0
     }
 }
 
-/// Parsed TLS information including callbacks.
+/// Parsed TLS information, with the callbacks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TlsInfo {
     /// The TLS directory.
     pub directory: Option<TlsDirectory>,
-    /// List of callback RVAs (converted from VAs).
+    /// Callback RVAs, converted from the VAs in the callback array.
     pub callback_rvas: Vec<u64>,
-    /// Base used to convert the directory's absolute VAs to RVAs.
+    /// Image base that converts the absolute VAs of the directory to RVAs.
     pub image_base: u64,
 }
 
-/// Upper bound on TLS callback-array entries scanned while looking for the
-/// null terminator.
+/// Maximum number of TLS callback array entries to scan for the null terminator.
 const MAX_TLS_CALLBACKS: usize = 65_536;
 
 impl TlsInfo {
-    /// Parse TLS information from a PE.
-    /// `tls_rva` and `tls_size` come from the data directory.
-    /// `image_base` is needed to convert VAs to RVAs.
+    /// Parse TLS information from a PE image.
+    ///
+    /// `tls_rva` and `tls_size` come from the data directory. The function uses `image_base`
+    /// to convert VAs to RVAs.
     ///
     /// # Errors
     ///
-    /// Returns an error if `tls_size` is smaller than the directory structure,
-    /// if the directory or a callback-array slot cannot be read through
-    /// `read_at_rva`, if the raw-data, index, or callback VAs lie below
-    /// `image_base` or outside the 32-bit RVA space, if the raw-data range is
-    /// half-zero or reversed, or if the callback array has no null terminator
-    /// within 65,536 entries.
+    /// Returns an error in these conditions:
+    /// - `tls_size` is smaller than the directory structure.
+    /// - `read_at_rva` cannot read the directory or a callback array slot.
+    /// - The raw data, index, or callback VAs are below `image_base` or outside the 32-bit
+    ///   RVA space.
+    /// - Only one end of the raw data range is zero, or the range is reversed.
+    /// - The callback array has no null terminator within 65,536 entries.
     pub fn parse<F>(
         tls_rva: u32,
         tls_size: u32,
@@ -345,12 +348,12 @@ where
             ))
         };
 
-        // Null terminator
+        // Null terminator.
         if callback_address == 0 {
             break;
         }
 
-        // Convert VA to RVA
+        // Convert the VA to an RVA.
         let callback_rva = callback_address.checked_sub(image_base).ok_or_else(|| {
             Error::invalid_data_directory(format!(
                 "TLS callback VA {callback_address:#x} is below image base {image_base:#x}"
@@ -375,10 +378,10 @@ where
     Ok(callback_rvas)
 }
 
-/// Builder for TLS directories.
+/// A builder for TLS directories.
 ///
-/// TLS directories contain thread-local storage initialization data and callbacks.
-/// The callbacks are function pointers called before the entry point.
+/// A TLS directory contains thread local storage initialization data and callbacks. The
+/// callbacks are function pointers. The loader calls them before the entry point.
 ///
 /// # Example
 ///
@@ -394,24 +397,25 @@ where
 /// ```
 #[derive(Debug, Clone)]
 pub struct TlsBuilder {
-    /// Base RVA where the TLS section will be placed.
+    /// Base RVA of the TLS block.
     base_rva: u32,
-    /// Image base address (needed to convert RVAs to VAs).
+    /// Image base, which converts RVAs to VAs.
     image_base: u64,
-    /// Whether this is a 64-bit PE.
+    /// `true` if the image is a 64-bit PE (PE32+).
     is_64bit: bool,
 }
 
-/// Byte layout of the TLS block emitted by [`TlsBuilder`]:
-/// `[directory][TLS index (4 bytes)][padding][null-terminated callback array]`.
+/// The byte layout of the TLS block that [`TlsBuilder`] emits.
+///
+/// The block is `[directory][TLS index (4 bytes)][padding][null-terminated callback array]`.
 struct TlsLayout {
-    /// Size of the TLS directory structure, which is also the index offset.
+    /// Size of the TLS directory structure. This is also the offset of the TLS index.
     dir_size: usize,
-    /// Pointer-aligned offset of the callback array.
+    /// Offset of the callback array in the block, aligned to the pointer size.
     callbacks_offset: usize,
     /// Total size of the block.
     total_size: usize,
-    /// `dir_size` as stored in the data directory.
+    /// The `dir_size` value that the data directory stores.
     dir_size_u32: u32,
     /// `total_size` as a 32-bit length.
     total_size_u32: u32,
@@ -421,9 +425,9 @@ impl TlsBuilder {
     /// Create a new TLS builder.
     ///
     /// # Arguments
-    /// * `base_rva` - RVA where the TLS data will be placed
-    /// * `image_base` - Image base address for VA calculations
-    /// * `is_64bit` - Whether the target PE is 64-bit
+    /// * `base_rva` - RVA of the TLS block
+    /// * `image_base` - Image base for VA calculations
+    /// * `is_64bit` - `true` if the target is a 64-bit PE (PE32+)
     #[must_use]
     pub fn new(base_rva: u32, image_base: u64, is_64bit: bool) -> Self {
         Self {
@@ -440,13 +444,13 @@ impl TlsBuilder {
     /// * `raw_data_end_rva` - RVA of the TLS raw data end
     /// * `callback_rvas` - List of callback function RVAs
     ///
-    /// Returns (`data`, `directory_size`) where:
-    /// - `data` is the raw bytes to write to the section
-    /// - `directory_size` is the size of the TLS directory (for data directory)
+    /// Returns `(data, directory_size)`:
+    /// - `data` is the raw bytes to write to the section.
+    /// - `directory_size` is the size of the TLS directory, for the data directory.
     ///
     /// # Panics
     ///
-    /// Panics if [`Self::try_build`] fails; use it for fallible serialization.
+    /// Panics if [`Self::try_build`] fails. Use [`Self::try_build`] for fallible serialization.
     #[must_use]
     pub fn build(
         &self,
@@ -458,13 +462,15 @@ impl TlsBuilder {
             .expect("TLS build failed: use try_build() for fallible serialization")
     }
 
-    /// Build TLS data with checked VA/RVA and size arithmetic.
+    /// Build the TLS data with checked VA, RVA and size arithmetic.
     ///
     /// # Errors
     ///
-    /// Returns an error if the raw-data range is reversed or half-zero, if a
-    /// callback RVA exceeds `u32`, if the block size or any RVA/VA computation
-    /// overflows, or if a PE32 VA does not fit in 32 bits.
+    /// Returns an error in these conditions:
+    /// - The raw data range is reversed, or only one end of it is zero.
+    /// - A callback RVA exceeds `u32`.
+    /// - The block size or an RVA or VA calculation overflows.
+    /// - A PE32 VA does not fit in 32 bits.
     pub fn try_build(
         &self,
         raw_data_start_rva: u32,
@@ -499,7 +505,7 @@ impl TlsBuilder {
             .checked_add(layout.total_size_u32)
             .ok_or_else(|| Error::invalid_data_directory("TLS data RVA range overflow"))?;
 
-        // Convert RVAs to VAs
+        // Convert the RVAs to VAs.
         let (raw_start_address, raw_end_address) = if raw_data_start_rva == 0 {
             (0, 0)
         } else {
@@ -536,11 +542,11 @@ impl TlsBuilder {
             },
         )?;
 
-        // Write TLS index (initialized to 0)
+        // Write the TLS index (initialized to 0).
         data.extend_from_slice(&0u32.to_le_bytes());
         data.resize(layout.callbacks_offset, 0);
 
-        // Write callbacks array
+        // Write the callback array.
         for &callback_rva in callback_rvas {
             let callback_rva = u32::try_from(callback_rva)
                 .map_err(|_| Error::invalid_data_directory("TLS callback RVA exceeds u32"))?;
@@ -549,13 +555,13 @@ impl TlsBuilder {
             self.push_pointer(&mut data, callback_address)?;
         }
 
-        // Null terminator for callbacks
+        // Write the null terminator of the callback array.
         self.push_pointer(&mut data, 0)?;
 
         Ok((data, layout.dir_size_u32))
     }
 
-    /// Compute the serialized layout for `num_callbacks` callbacks.
+    /// Calculate the serialized layout for `num_callbacks` callbacks.
     fn layout(&self, num_callbacks: usize) -> Result<TlsLayout> {
         let ptr_size: usize = if self.is_64bit { 8 } else { 4 };
         let dir_size = if self.is_64bit {
@@ -587,7 +593,7 @@ impl TlsBuilder {
         })
     }
 
-    /// VA of the byte at `offset` within the TLS block.
+    /// Return the VA of the byte at `offset` in the TLS block.
     fn block_va(&self, offset: usize, context: &str) -> Result<u64> {
         let offset = u32::try_from(offset)
             .map_err(|_| Error::invalid_data_directory(format!("{context} offset exceeds u32")))?;
@@ -598,7 +604,7 @@ impl TlsBuilder {
         checked_va(self.image_base, u64::from(rva), context)
     }
 
-    /// Append `directory` in the target bitness, narrowing VAs for PE32.
+    /// Append `directory` in the target bitness. For PE32, narrow the VAs to 32 bits.
     fn push_directory(&self, data: &mut Vec<u8>, directory: TlsDirectory64) -> Result<()> {
         if self.is_64bit {
             data.extend_from_slice(&directory.to_bytes());
@@ -640,28 +646,31 @@ impl TlsBuilder {
         Ok(())
     }
 
-    /// Build from an existing `TlsInfo` structure.
+    /// Build the TLS block from an existing [`TlsInfo`].
     ///
-    /// This rebuilds the TLS directory from parsed info.
+    /// This function rebuilds the TLS directory from the parsed information.
     ///
     /// # Panics
     ///
-    /// Panics if [`Self::try_build_from_info`] fails; use it for fallible
-    /// serialization.
+    /// Panics if [`Self::try_build_from_info`] fails. Use [`Self::try_build_from_info`] for
+    /// fallible serialization.
     #[must_use]
     pub fn build_from_info(&self, tls_info: &TlsInfo) -> (Vec<u8>, u32) {
         self.try_build_from_info(tls_info)
             .expect("TLS build failed: use try_build_from_info() for fallible serialization")
     }
 
-    /// Rebuild parsed TLS information, rebasing its VA fields to this builder's
-    /// image base while preserving zero-fill and characteristics.
+    /// Rebuild parsed TLS information for the image base of this builder.
+    ///
+    /// The function rebases the VA fields to the image base of the builder. It keeps the
+    /// `SizeOfZeroFill` and `Characteristics` values.
     ///
     /// # Errors
     ///
-    /// Returns an error if the directory bitness differs from the builder's,
-    /// if a raw-data VA lies outside `tls_info.image_base`'s 32-bit RVA space,
-    /// or if [`Self::try_build`] fails.
+    /// Returns an error in these conditions:
+    /// - The directory bitness is not the same as the bitness of the builder.
+    /// - A raw data VA is outside the 32-bit RVA space of `tls_info.image_base`.
+    /// - [`Self::try_build`] fails.
     pub fn try_build_from_info(&self, tls_info: &TlsInfo) -> Result<(Vec<u8>, u32)> {
         if matches!(tls_info.directory, Some(TlsDirectory::Tls64(_))) != self.is_64bit
             && tls_info.directory.is_some()
@@ -696,24 +705,23 @@ impl TlsBuilder {
         )
     }
 
-    /// Calculate the size needed for TLS data.
+    /// Calculate the size in bytes of the TLS data.
     ///
     /// # Panics
     ///
-    /// Panics if the size exceeds `u32`; use [`Self::try_calculate_size`]
-    /// for a fallible calculation.
+    /// Panics if the size exceeds `u32`. Use [`Self::try_calculate_size`] for a fallible
+    /// calculation.
     #[must_use]
     pub fn calculate_size(&self, num_callbacks: usize) -> usize {
         self.try_calculate_size(num_callbacks)
             .expect("TLS data size overflow: use try_calculate_size()")
     }
 
-    /// Calculate the serialized size using checked pointer-array arithmetic.
+    /// Calculate the serialized size in bytes with checked pointer-array arithmetic.
     ///
     /// # Errors
     ///
-    /// Returns an error if the size computation overflows or the total exceeds
-    /// `u32`.
+    /// Returns an error if the size calculation overflows or the total exceeds `u32`.
     pub fn try_calculate_size(&self, num_callbacks: usize) -> Result<usize> {
         Ok(self.layout(num_callbacks)?.total_size)
     }

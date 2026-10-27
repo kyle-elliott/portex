@@ -9,10 +9,10 @@ use crate::validation::{ValidationCode, ValidationIssue, ValidationResult};
 impl PeImage {
     // ========== Validation ==========
 
-    /// Validate PE structural integrity.
+    /// Validate the structural integrity of the PE image.
     ///
-    /// Returns a collection of validation issues (errors and warnings).
-    /// An empty result means the PE passed all validation checks.
+    /// Returns a collection of validation issues (errors and warnings). An empty result means
+    /// that the image passed all validation checks.
     ///
     /// # Example
     ///
@@ -51,9 +51,9 @@ impl PeImage {
         result
     }
 
-    /// Check DOS, COFF, and optional-header field consistency.
+    /// Check the consistency of the DOS, COFF and optional-header fields.
     fn validate_header_fields(&self, result: &mut ValidationResult) {
-        // Check DOS signature
+        // Check the DOS signature.
         if self.dos_header.e_magic != 0x5A4D {
             result.push(ValidationIssue::error(
                 ValidationCode::InvalidDosSignature,
@@ -61,7 +61,7 @@ impl PeImage {
             ));
         }
 
-        // Check sections exist
+        // Check that sections exist.
         if self.sections.is_empty() {
             result.push(ValidationIssue::warning(
                 ValidationCode::NoSections,
@@ -137,7 +137,7 @@ impl PeImage {
 
     /// Check `FileAlignment` and `SectionAlignment` values.
     fn validate_alignments(result: &mut ValidationResult, file_align: u32, section_align: u32) {
-        // Check file alignment
+        // Check the file alignment.
         let low_alignment = section_align != 0 && section_align < 0x1000;
         if file_align == 0
             || !file_align.is_power_of_two()
@@ -151,7 +151,7 @@ impl PeImage {
             ));
         }
 
-        // Check section alignment
+        // Check the section alignment.
         if section_align == 0 || !section_align.is_power_of_two() {
             result.push(ValidationIssue::error(
                 ValidationCode::InvalidSectionAlignment,
@@ -264,7 +264,7 @@ impl PeImage {
         }
     }
 
-    /// Check linker-derived optional-header code/data summaries.
+    /// Check the code and data summaries in the optional header. The linker sets these fields.
     fn validate_optional_summaries(&self, result: &mut ValidationResult) {
         match super::edit::calculate_optional_layout_fields(&self.sections) {
             Ok(expected) => {
@@ -291,11 +291,10 @@ impl PeImage {
                     || base_of_code != expected.base_of_code
                     || base_of_data.is_some_and(|value| value != expected.base_of_data)
                 {
-                    // These fields are linker summaries rather than loader
-                    // invariants. In particular, Microsoft's linker can count
-                    // auxiliary code sections in SizeOfInitializedData even
-                    // when they only carry IMAGE_SCN_CNT_CODE. Report the
-                    // discrepancy without rejecting otherwise valid images.
+                    // These fields are linker summaries, not loader invariants. For example,
+                    // the Microsoft linker can count auxiliary code sections in
+                    // SizeOfInitializedData, even when they only have IMAGE_SCN_CNT_CODE.
+                    // Report the difference, but do not reject images that are otherwise valid.
                     result.push(
                         ValidationIssue::warning(
                             ValidationCode::InconsistentOptionalHeader,
@@ -324,7 +323,7 @@ impl PeImage {
 
     /// Check that `AddressOfEntryPoint` lies within a section.
     fn validate_entry_point(&self, result: &mut ValidationResult) {
-        // Check entry point is within a section (or is 0 for DLLs)
+        // Check that the entry point is in a section, or is 0 for a DLL.
         let entry = self.optional_header.address_of_entry_point();
         if entry != 0 {
             let entry_in_section = self.sections.iter().any(|s| s.header.contains_rva(entry));
@@ -337,9 +336,9 @@ impl PeImage {
         }
     }
 
-    /// Check that section raw-file ranges do not overlap.
+    /// Check that the raw file ranges of the sections do not overlap.
     fn validate_section_file_overlaps(&self, result: &mut ValidationResult) {
-        // Check for overlapping sections (file offsets)
+        // Check for overlapping sections (file offsets).
         for (i, s1) in self.sections.iter().enumerate() {
             if s1.header.pointer_to_raw_data == 0 || s1.header.size_of_raw_data == 0 {
                 continue;
@@ -352,7 +351,7 @@ impl PeImage {
                 }
                 let s2_end = u64::from(s2.header.pointer_to_raw_data)
                     + u64::from(s2.header.size_of_raw_data);
-                // Check overlap
+                // Check for an overlap.
                 if u64::from(s1.header.pointer_to_raw_data) < s2_end
                     && u64::from(s2.header.pointer_to_raw_data) < s1_end
                 {
@@ -380,7 +379,7 @@ impl PeImage {
         }
     }
 
-    /// Check section alignment and loaded raw data.
+    /// Check the section alignment and the loaded raw data.
     fn validate_section_placement(
         &self,
         result: &mut ValidationResult,
@@ -454,9 +453,9 @@ impl PeImage {
         }
     }
 
-    /// Check that section virtual ranges do not overlap.
+    /// Check that the virtual ranges of the sections do not overlap.
     fn validate_section_virtual_overlaps(&self, result: &mut ValidationResult) {
-        // Check for overlapping sections (virtual addresses)
+        // Check for overlapping sections (RVAs).
         for (i, s1) in self.sections.iter().enumerate() {
             if s1.header.virtual_size.max(s1.header.size_of_raw_data) == 0 {
                 continue;
@@ -496,9 +495,9 @@ impl PeImage {
         }
     }
 
-    /// Check data-directory entries against the image.
+    /// Check the data directory entries against the image.
     fn validate_data_directories(&self, result: &mut ValidationResult) {
-        // Check data directories point to valid sections
+        // Check that the data directories point to valid sections.
         for dir_type in DataDirectoryType::all() {
             if let Some(dir) = self.data_directory(dir_type)
                 && dir.is_present()
@@ -541,8 +540,8 @@ impl PeImage {
                     );
                 }
                 if dir_type == DataDirectoryType::Security {
-                    // Its address is a file offset and PE intentionally does not
-                    // own overlay bytes. PeFile validates the actual range.
+                    // Its address is a file offset, and `PeImage` intentionally does not own
+                    // overlay bytes. `PeFile` validates the actual range.
                     continue;
                 }
                 let rva = dir.virtual_address;
@@ -571,7 +570,7 @@ impl PeImage {
 
     /// Check a nonzero `CheckSum` against the computed checksum.
     fn validate_checksum(&self, result: &mut ValidationResult) {
-        // Check checksum (only warn if non-zero and doesn't match)
+        // Warn only if the checksum is nonzero and does not match.
         let stored_checksum = match &self.optional_header {
             OptionalHeader::Pe32(h) => h.check_sum,
             OptionalHeader::Pe32Plus(h) => h.check_sum,

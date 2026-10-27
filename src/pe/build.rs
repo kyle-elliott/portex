@@ -14,10 +14,11 @@ use std::path::Path;
 
 impl PeImage {
     /// Build the PE file as a byte vector.
-    /// This method does not mutate self - it computes layout on a clone.
     ///
-    /// For untrusted or manually-constructed structures, prefer
-    /// [`Self::try_build`] to receive structural errors instead of panicking.
+    /// This method does not change `self`. It computes the layout on a clone.
+    ///
+    /// For untrusted or hand-built structures, use [`Self::try_build`]. It returns an error for a
+    /// structural problem and does not panic.
     ///
     /// # Panics
     ///
@@ -28,15 +29,17 @@ impl PeImage {
             .expect("PE build failed: use PeImage::try_build() to handle invalid structures")
     }
 
-    /// Build the PE file, returning an error for invalid offsets, sizes, or
-    /// header relationships.
+    /// Build the PE file, or return an error for an invalid offset, size or header relationship.
     ///
     /// # Errors
     ///
-    /// Returns an error if layout recomputation fails, if `e_lfanew`, the DOS
-    /// stub, the optional header, or section raw ranges are inconsistent or
-    /// overflow, if a debug directory entry cannot be rebased, or if the
-    /// output buffer cannot be allocated.
+    /// Returns an error if:
+    ///
+    /// - The layout update fails.
+    /// - `e_lfanew`, the DOS stub, the optional header or the raw ranges of the sections are not
+    ///   consistent, or they overflow.
+    /// - The `PointerToRawData` file offset of a debug directory entry cannot be rebased.
+    /// - The allocation of the output buffer fails.
     pub fn try_build(&self) -> Result<Vec<u8>> {
         let mut pe = self.clone();
         pe.try_update_layout()?;
@@ -44,10 +47,10 @@ impl PeImage {
         pe.try_write_bytes()
     }
 
-    /// Serialize using the currently declared raw offsets without relayout.
+    /// Serialize the image with the current raw file offsets, and do not recompute the layout.
     ///
-    /// This is used by [`crate::PeFile`] to preserve deliberate file gaps when
-    /// the parsed layout is otherwise unchanged.
+    /// [`crate::PeFile`] uses this method to keep intentional file gaps when the parsed layout
+    /// does not change otherwise.
     pub(crate) fn try_build_current_layout(&self) -> Result<Vec<u8>> {
         if !self.current_layout_can_hold_data()? {
             return Err(Error::invalid_section(
@@ -90,26 +93,29 @@ impl PeImage {
         Ok(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start))
     }
 
-    /// Materialize this normalized representation as a loader-style memory
-    /// image at its current runtime base.
+    /// Make a loader-style memory image of this normalized image at its current runtime base.
     ///
     /// # Errors
     ///
-    /// Same conditions as [`Self::to_mapped_image_at`].
+    /// Returns an error for the same conditions as [`Self::to_mapped_image_at`].
     pub fn to_mapped_image(&self) -> Result<Vec<u8>> {
         self.to_mapped_image_at(self.runtime_image_base())
     }
 
-    /// Materialize a loader-style memory image at `runtime_image_base`,
-    /// applying the base-relocation table when the target base differs from
-    /// the bytes' current base.
+    /// Make a loader-style memory image at `runtime_image_base`.
+    ///
+    /// `runtime_image_base` is the VA of the image in memory. If it is different from the current
+    /// base of the bytes, the method applies the base relocation table.
     ///
     /// # Errors
     ///
-    /// Returns an error if layout recomputation or header serialization fails,
-    /// if a section extends past `SizeOfImage`, if the image buffer cannot be
-    /// allocated, or if rebasing is required but the base-relocation table is
-    /// missing, malformed, or targets bytes outside the image.
+    /// Returns an error if:
+    ///
+    /// - The layout update or the header serialization fails.
+    /// - A section extends past `SizeOfImage`.
+    /// - The allocation of the image buffer fails.
+    /// - A rebase is necessary, but the base relocation table is missing or malformed, or it
+    ///   targets bytes outside the image.
     pub fn to_mapped_image_at(&self, runtime_image_base: u64) -> Result<Vec<u8>> {
         let mut pe = self.clone();
         pe.try_update_layout()?;
@@ -157,7 +163,7 @@ impl PeImage {
         Ok(mapped)
     }
 
-    /// Update raw-file-only pointer fields after section layout changes.
+    /// Update the pointer fields that hold raw file offsets after a change to the section layout.
     fn synchronize_file_offsets(&mut self) -> Result<()> {
         use crate::data_dir::DataDirectoryType;
         use crate::debug::DebugDirectory;
@@ -274,10 +280,11 @@ impl PeImage {
         Ok(output)
     }
 
-    /// Write the PE bytes without updating layout.
-    /// Use this if you've already called `update_layout()` and want to avoid redundant work.
+    /// Write the PE bytes, and do not update the layout.
+    ///
+    /// Use this method after a call to `update_layout()` to prevent repeated work.
     fn try_write_bytes(&self) -> Result<Vec<u8>> {
-        // Calculate total file size
+        // Calculate the total file size.
         let mut file_size = self.optional_header.size_of_headers() as usize;
         for section in &self.sections {
             if section.header.pointer_to_raw_data > 0 {
@@ -301,7 +308,7 @@ impl PeImage {
             )));
         }
 
-        // Write section data
+        // Write the section data.
         for section in &self.sections {
             let start = section.header.pointer_to_raw_data as usize;
             let aligned_size = section.header.size_of_raw_data as usize;
@@ -311,7 +318,7 @@ impl PeImage {
             if start > 0 && aligned_size > 0 && end <= output.len() {
                 let data_len = section.data.len().min(aligned_size);
                 output[start..start + data_len].copy_from_slice(&section.data[..data_len]);
-                // Padding is already zeros
+                // The padding is already zero.
             } else if !section.data.is_empty() && section.preserved_raw_size() != Some(0) {
                 return Err(Error::invalid_section(format!(
                     "section '{}' has data but no writable raw-file range",
@@ -324,12 +331,13 @@ impl PeImage {
     }
 
     /// Write the PE file to disk.
-    /// This method does not mutate self - it computes layout on a clone.
+    ///
+    /// This method does not change `self`. It computes the layout on a clone.
     ///
     /// # Errors
     ///
-    /// Returns an error if [`Self::try_build`] fails or the file cannot be
-    /// created or written.
+    /// Returns an error if [`Self::try_build`] fails, or if the creation of the file or the write
+    /// fails.
     #[cfg(feature = "std")]
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = self.try_build()?;

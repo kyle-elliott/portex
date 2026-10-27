@@ -1,11 +1,11 @@
-//! Main PE file structure and parsing.
+//! The main PE image types and their parsers.
 //!
-//! This module provides the main [`PeImage`] and [`PeHeaders`] types for reading,
-//! modifying, and writing Windows PE (Portable Executable) files.
+//! This module supplies the [`PeImage`] and [`PeHeaders`] types. Use them to read, change, and
+//! write Windows PE (Portable Executable) files.
 //!
 //! # Examples
 //!
-//! ## Loading and inspecting a PE file
+//! ## Load and inspect a PE file
 //!
 //! ```no_run
 //! use portex::PeImage;
@@ -13,12 +13,12 @@
 //! # let file_bytes: &[u8] = &[];
 //! let pe = PeImage::parse(file_bytes)?;
 //!
-//! // Check architecture
+//! // Check the architecture.
 //! println!("64-bit: {}", pe.is_64bit());
 //! println!("Entry point: {:#x}", pe.entry_point());
 //! println!("Image base: {:#x}", pe.image_base());
 //!
-//! // List sections
+//! // List the sections.
 //! for section in &pe.sections {
 //!     println!("Section: {} (RVA: {:#x}, size: {})",
 //!         section.name(),
@@ -28,20 +28,20 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 //!
-//! ## Loading just headers (efficient for large files)
+//! ## Load only the headers (faster for large files)
 //!
 //! ```no_run
 //! use portex::PeHeaders;
 //!
 //! # let file_bytes: &[u8] = &[];
-//! // Just headers, no section data
+//! // Read only the headers. Do not read the section data.
 //! let headers = PeHeaders::from_slice(file_bytes)?;
 //! println!("Entry point: {:#x}", headers.entry_point());
 //! println!("Number of sections: {}", headers.section_headers.len());
 //! # Ok::<(), portex::Error>(())
 //! ```
 //!
-//! ## Modifying and writing a PE file
+//! ## Change and write a PE file
 //!
 //! ```no_run
 //! use portex::PeImage;
@@ -49,7 +49,7 @@
 //! # let file_bytes: &[u8] = &[];
 //! let mut pe = PeImage::parse(file_bytes)?;
 //!
-//! // Modify entry point (access inner header directly)
+//! // Change the entry point RVA through the inner header.
 //! match &mut pe.optional_header {
 //!     portex::optional::OptionalHeader::Pe32(h) => h.address_of_entry_point = 0x1000,
 //!     portex::optional::OptionalHeader::Pe32Plus(h) => h.address_of_entry_point = 0x1000,
@@ -66,46 +66,46 @@ use crate::optional::OptionalHeader;
 use crate::prelude::*;
 use crate::section::{Section, SectionHeader};
 
-/// Describes how PE bytes are laid out in their source.
+/// The layout of the PE bytes in their source.
 ///
-/// Raw PE files store section payloads at [`SectionHeader::pointer_to_raw_data`],
-/// while images mapped by a loader store them at their RVA
-/// ([`SectionHeader::virtual_address`]).
+/// A raw PE file stores each section payload at the file offset
+/// [`SectionHeader::pointer_to_raw_data`]. An image that a loader mapped stores each payload at
+/// its RVA ([`SectionHeader::virtual_address`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SourceLayout {
-    /// Raw file layout, as stored on disk or in a byte-for-byte file buffer.
+    /// Raw file layout, as on disk or in a byte-for-byte copy of the file.
     #[default]
     File,
-    /// Loader-mapped image layout, where an RVA is an offset from the image base.
+    /// Loader-mapped image layout. Each RVA is an offset from the start of the image.
     Mapped,
 }
 
-/// Policy for section bytes that cannot be read from the source.
+/// The policy for section bytes that the parser cannot read from the source.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MissingSectionData {
-    /// Reject truncated or unreadable section ranges.
+    /// Reject section ranges that are truncated or that the parser cannot read.
     #[default]
     Error,
-    /// Keep the section header and represent unavailable bytes as empty data.
+    /// Keep the section header, and give the section empty data for the missing bytes.
     ///
-    /// This is useful for remote mapped images where discardable pages may no
-    /// longer be committed.
+    /// Use this for remote mapped images. In such images, the pages of discardable sections
+    /// can be decommitted.
     Empty,
 }
 
-/// Options for parsing a PE image from an arbitrary byte source.
+/// Options to parse a PE image from any byte source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseOptions {
-    /// How RVAs map into the source.
+    /// How each RVA maps to an offset in the source.
     pub layout: SourceLayout,
-    /// How unreadable section ranges are handled.
+    /// What to do with section ranges that the parser cannot read.
     pub missing_section_data: MissingSectionData,
-    /// Actual load base for a relocated mapped image.
+    /// The actual load address (a VA) of a relocated mapped image.
     pub runtime_image_base: Option<u64>,
 }
 
 impl ParseOptions {
-    /// Strict raw-file parsing.
+    /// Return options for strict parsing of a raw file.
     #[must_use]
     pub const fn file() -> Self {
         Self {
@@ -115,7 +115,7 @@ impl ParseOptions {
         }
     }
 
-    /// Strict loader-mapped image parsing.
+    /// Return options for strict parsing of a loader-mapped image.
     #[must_use]
     pub const fn mapped() -> Self {
         Self {
@@ -125,14 +125,14 @@ impl ParseOptions {
         }
     }
 
-    /// Allow section ranges that are absent from the source.
+    /// Accept section ranges that are not in the source.
     #[must_use]
     pub const fn allow_missing_section_data(mut self) -> Self {
         self.missing_section_data = MissingSectionData::Empty;
         self
     }
 
-    /// Record the actual base address of a relocated mapped image.
+    /// Set the actual base address (a VA) of a relocated mapped image.
     #[must_use]
     pub const fn runtime_image_base(mut self, image_base: u64) -> Self {
         self.runtime_image_base = Some(image_base);
@@ -146,40 +146,42 @@ impl Default for ParseOptions {
     }
 }
 
-/// Maximum number of sections accepted by the Windows image loader.
+/// The maximum number of sections that the Windows image loader accepts.
 pub const MAX_NUMBER_OF_SECTIONS: usize = 96;
 
-/// A parsed PE file with owned section data.
-/// This is the main type for reading, modifying, and writing PE files.
+/// A parsed PE file that owns its section data.
+///
+/// This is the main type to read, change, and write PE files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeImage {
-    /// DOS header.
+    /// The DOS header (`IMAGE_DOS_HEADER`).
     pub dos_header: DosHeader,
-    /// DOS stub (data between DOS header and PE signature).
+    /// The DOS stub: the bytes between the DOS header and the PE signature.
     pub dos_stub: Vec<u8>,
-    /// COFF file header.
+    /// The COFF file header (`IMAGE_FILE_HEADER`).
     pub coff_header: CoffHeader,
-    /// Optional header (PE32 or PE32+).
+    /// The optional header (`IMAGE_OPTIONAL_HEADER32` or `IMAGE_OPTIONAL_HEADER64`).
     pub optional_header: OptionalHeader,
-    /// Sections with owned data.
+    /// The sections, each with its own data.
     pub sections: Vec<Section>,
     pub(crate) source_layout: SourceLayout,
     pub(crate) runtime_image_base: Option<u64>,
 }
 
-/// Partial PE headers - just the headers without section data.
-/// Useful for remote process scenarios or when you only need header info.
+/// The PE headers without the section data.
+///
+/// Use this type for a remote process, or when you need only the header data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeHeaders {
-    /// DOS header.
+    /// The DOS header (`IMAGE_DOS_HEADER`).
     pub dos_header: DosHeader,
-    /// COFF file header.
+    /// The COFF file header (`IMAGE_FILE_HEADER`).
     pub coff_header: CoffHeader,
-    /// Optional header (PE32 or PE32+).
+    /// The optional header (`IMAGE_OPTIONAL_HEADER32` or `IMAGE_OPTIONAL_HEADER64`).
     pub optional_header: OptionalHeader,
-    /// Section headers (no data).
+    /// The section headers (`IMAGE_SECTION_HEADER`), without the section data.
     pub section_headers: Vec<SectionHeader>,
-    /// Offset where PE signature was found.
+    /// The source offset of the PE signature.
     pub pe_offset: u64,
 }
 

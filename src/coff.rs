@@ -1,13 +1,13 @@
-//! COFF File Header structures and parsing.
+//! COFF file header (`IMAGE_FILE_HEADER`) structures and parsing.
 
 use crate::prelude::*;
 use crate::reader::ReadAt;
 use crate::{Error, Result};
 
-/// PE signature "PE\0\0".
+/// The PE signature `PE\0\0`, read as a little-endian `u32`.
 pub const PE_SIGNATURE: u32 = 0x0000_4550;
 
-/// Machine type constants.
+/// Machine types (`IMAGE_FILE_MACHINE_*` values) for `IMAGE_FILE_HEADER.Machine`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 #[non_exhaustive]
@@ -116,7 +116,7 @@ impl MachineType {
         }
     }
 
-    /// Whether this machine normally uses a PE32+ optional header.
+    /// Return `true` if this machine usually uses a PE32+ optional header.
     #[must_use]
     pub const fn is_64_bit(self) -> bool {
         matches!(
@@ -134,72 +134,77 @@ impl MachineType {
         )
     }
 
-    /// Whether this machine normally uses a PE32 optional header.
+    /// Return `true` if this machine usually uses a PE32 optional header.
+    ///
+    /// [`MachineType::Unknown`] returns `false`.
     #[must_use]
     pub const fn is_32_bit(self) -> bool {
         !matches!(self, Self::Unknown) && !self.is_64_bit()
     }
 }
 
-/// Characteristics flags for the COFF header.
+/// Characteristics flags (`IMAGE_FILE_*` values) for `IMAGE_FILE_HEADER.Characteristics`.
 pub mod characteristics {
-    /// Relocation info stripped from file.
+    /// `IMAGE_FILE_RELOCS_STRIPPED`: the file has no base relocations.
     pub const RELOCS_STRIPPED: u16 = 0x0001;
-    /// File is executable.
+    /// `IMAGE_FILE_EXECUTABLE_IMAGE`: the file is executable.
     pub const EXECUTABLE_IMAGE: u16 = 0x0002;
-    /// Line numbers stripped from file.
+    /// `IMAGE_FILE_LINE_NUMS_STRIPPED`: the file has no COFF line numbers (obsolete).
     pub const LINE_NUMS_STRIPPED: u16 = 0x0004;
-    /// Local symbols stripped from file.
+    /// `IMAGE_FILE_LOCAL_SYMS_STRIPPED`: the file has no COFF local symbols (obsolete).
     pub const LOCAL_SYMS_STRIPPED: u16 = 0x0008;
-    /// Aggressively trim working set.
+    /// `IMAGE_FILE_AGGRESSIVE_WS_TRIM`: trim the working set aggressively (obsolete).
     pub const AGGRESSIVE_WS_TRIM: u16 = 0x0010;
-    /// App can handle >2GB addresses.
+    /// `IMAGE_FILE_LARGE_ADDRESS_AWARE`: the application can use addresses above 2 GB.
     pub const LARGE_ADDRESS_AWARE: u16 = 0x0020;
-    /// Bytes of machine word are reversed (obsolete).
+    /// `IMAGE_FILE_BYTES_REVERSED_LO`: the bytes of the machine word are reversed (obsolete).
     pub const BYTES_REVERSED_LO: u16 = 0x0080;
-    /// 32-bit word machine.
+    /// `IMAGE_FILE_32BIT_MACHINE`: the machine uses 32-bit words.
     pub const MACHINE_32BIT: u16 = 0x0100;
-    /// Debugging info stripped from file.
+    /// `IMAGE_FILE_DEBUG_STRIPPED`: the file has no debug information.
     pub const DEBUG_STRIPPED: u16 = 0x0200;
-    /// Copy to swap file if on removable media.
+    /// `IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP`: on removable media, copy the image to the swap
+    /// file and run it from there.
     pub const REMOVABLE_RUN_FROM_SWAP: u16 = 0x0400;
-    /// Copy to swap file if on network media.
+    /// `IMAGE_FILE_NET_RUN_FROM_SWAP`: on network media, copy the image to the swap file and
+    /// run it from there.
     pub const NET_RUN_FROM_SWAP: u16 = 0x0800;
-    /// File is a system file.
+    /// `IMAGE_FILE_SYSTEM`: the file is a system file.
     pub const SYSTEM: u16 = 0x1000;
-    /// File is a DLL.
+    /// `IMAGE_FILE_DLL`: the file is a DLL.
     pub const DLL: u16 = 0x2000;
-    /// File should only be run on a uniprocessor machine.
+    /// `IMAGE_FILE_UP_SYSTEM_ONLY`: run the file only on a uniprocessor machine.
     pub const UP_SYSTEM_ONLY: u16 = 0x4000;
-    /// Bytes of machine word are reversed (obsolete).
+    /// `IMAGE_FILE_BYTES_REVERSED_HI`: the bytes of the machine word are reversed (obsolete).
     pub const BYTES_REVERSED_HI: u16 = 0x8000;
 }
 
-/// COFF File Header (`IMAGE_FILE_HEADER`).
+/// The COFF file header (`IMAGE_FILE_HEADER`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct CoffHeader {
-    /// Target machine type.
+    /// The target machine type (`Machine`). See [`MachineType`].
     pub machine: u16,
-    /// Number of sections.
+    /// The number of section headers (`NumberOfSections`).
     pub number_of_sections: u16,
-    /// Timestamp (seconds since epoch).
+    /// The time stamp, in seconds since 1970-01-01 00:00 UTC (`TimeDateStamp`).
     pub time_date_stamp: u32,
-    /// File offset of COFF symbol table.
+    /// The file offset of the COFF symbol table (`PointerToSymbolTable`), or 0 if there is no
+    /// symbol table.
     pub pointer_to_symbol_table: u32,
-    /// Number of entries in symbol table.
+    /// The number of entries in the COFF symbol table (`NumberOfSymbols`).
     pub number_of_symbols: u32,
-    /// Size of optional header.
+    /// The size of the optional header in bytes (`SizeOfOptionalHeader`).
     pub size_of_optional_header: u16,
-    /// Characteristics flags.
+    /// The characteristics flags (`Characteristics`). See [`characteristics`].
     pub characteristics: u16,
 }
 
 impl CoffHeader {
-    /// Size of the COFF header in bytes.
+    /// The size of the COFF file header in bytes.
     pub const SIZE: usize = 20;
 
-    /// Parse a COFF header from a byte slice.
+    /// Parse a COFF file header from a byte slice.
     ///
     /// # Errors
     ///
@@ -220,7 +225,7 @@ impl CoffHeader {
         })
     }
 
-    /// Write the COFF header to a byte buffer.
+    /// Write the COFF file header to a byte buffer.
     ///
     /// # Errors
     ///
@@ -234,7 +239,7 @@ impl CoffHeader {
         Ok(())
     }
 
-    /// Encode the header into its on-disk little-endian layout.
+    /// Encode the header in its little-endian file layout.
     fn encode(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         buf[0..2].copy_from_slice(&self.machine.to_le_bytes());
@@ -247,25 +252,25 @@ impl CoffHeader {
         buf
     }
 
-    /// Get the machine type as an enum.
+    /// Return the machine type as a [`MachineType`], or `None` for an unknown value.
     #[must_use]
     pub fn machine_type(&self) -> Option<MachineType> {
         MachineType::from_u16(self.machine)
     }
 
-    /// Check if the file is a DLL.
+    /// Return `true` if the file is a DLL.
     #[must_use]
     pub fn is_dll(&self) -> bool {
         self.characteristics & characteristics::DLL != 0
     }
 
-    /// Check if the file is executable.
+    /// Return `true` if the file is executable.
     #[must_use]
     pub fn is_executable(&self) -> bool {
         self.characteristics & characteristics::EXECUTABLE_IMAGE != 0
     }
 
-    /// Parse a COFF header from a positional reader at the given offset.
+    /// Read a COFF file header from a [`ReadAt`] reader at the file offset `offset`.
     ///
     /// # Errors
     ///
@@ -276,14 +281,14 @@ impl CoffHeader {
         Self::parse(&buf)
     }
 
-    /// Serialize to a byte vector.
+    /// Serialize the header to a byte vector.
     #[must_use]
     pub fn to_bytes(self) -> Vec<u8> {
         self.encode().to_vec()
     }
 }
 
-/// Verify the `PE\0\0` signature at the given offset.
+/// Verify the `PE\0\0` signature at the file offset `offset`.
 ///
 /// # Errors
 ///

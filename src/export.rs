@@ -1,7 +1,7 @@
 //! Export table parsing and building.
 //!
-//! This module provides types for reading and writing PE export tables,
-//! including the export directory and exported functions.
+//! This module reads and writes PE export tables. An export table holds the export directory
+//! (`IMAGE_EXPORT_DIRECTORY`) and the exported functions.
 //!
 //! # Examples
 //!
@@ -36,15 +36,15 @@
 //! # let file_bytes: &[u8] = &[];
 //! let mut pe = PeImage::parse(file_bytes)?;
 //!
-//! // Build export table
+//! // Build the export table.
 //! let mut exports = ExportTable::default();
 //! exports.dll_name = "mylib.dll".to_string();
 //! exports.directory.base = 1;
 //! exports.add_export(Some("MyFunction1"), 0x1000);
 //! exports.add_export(Some("MyFunction2"), 0x2000);
-//! exports.add_export(None, 0x3000); // No name, just ordinal
+//! exports.add_export(None, 0x3000); // No name, only an ordinal.
 //!
-//! // Update PE with new exports
+//! // Put the new exports into the PE image.
 //! pe.update_exports(&exports, None)?;
 //! let rebuilt = pe.try_build()?;
 //! assert!(!rebuilt.is_empty());
@@ -54,36 +54,37 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// Maximum length for DLL and function names when reading export tables.
-/// This is a reasonable limit that covers all valid Windows symbol names while
-/// preventing unbounded reads on malformed PE files.
+/// The maximum length of a DLL name or a function name in an export table.
+///
+/// This limit covers all valid Windows symbol names. It also stops unbounded reads on malformed
+/// PE files.
 const MAX_NAME_LEN: usize = 4096;
 const MAX_EXPORT_FUNCTIONS: u32 = 1_048_576;
 
 /// `IMAGE_EXPORT_DIRECTORY`: the 40-byte header of the export data directory.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExportDirectory {
-    /// Export flags (reserved, must be 0).
+    /// Export flags. Reserved, must be 0.
     pub characteristics: u32,
-    /// Time/date stamp.
+    /// The time and date stamp.
     pub time_date_stamp: u32,
-    /// Major version.
+    /// The major version.
     pub major_version: u16,
-    /// Minor version.
+    /// The minor version.
     pub minor_version: u16,
-    /// RVA to the DLL name.
+    /// The RVA of the DLL name.
     pub name_rva: u32,
-    /// Starting ordinal number.
+    /// The first ordinal number.
     pub base: u32,
-    /// Number of entries in the Export Address Table.
+    /// The number of entries in the export address table (EAT).
     pub number_of_functions: u32,
-    /// Number of entries in the Name Pointer Table.
+    /// The number of entries in the name pointer table.
     pub number_of_names: u32,
-    /// RVA to the Export Address Table (EAT).
+    /// The RVA of the export address table (EAT).
     pub address_of_functions: u32,
-    /// RVA to the Export Name Pointer Table.
+    /// The RVA of the export name pointer table.
     pub address_of_names: u32,
-    /// RVA to the Export Ordinal Table.
+    /// The RVA of the export ordinal table.
     pub address_of_name_ordinals: u32,
 }
 
@@ -91,7 +92,7 @@ impl ExportDirectory {
     /// Size of a serialized `IMAGE_EXPORT_DIRECTORY` in bytes.
     pub const SIZE: usize = 40;
 
-    /// Parse from bytes.
+    /// Parse an export directory from bytes.
     ///
     /// # Errors
     ///
@@ -117,7 +118,7 @@ impl ExportDirectory {
         })
     }
 
-    /// Write to a buffer.
+    /// Write the export directory to a buffer.
     ///
     /// # Errors
     ///
@@ -132,7 +133,7 @@ impl ExportDirectory {
         Ok(())
     }
 
-    /// Serialize to bytes.
+    /// Serialize the export directory to bytes.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = [0u8; ExportDirectory::SIZE];
@@ -155,53 +156,55 @@ impl ExportDirectory {
     }
 }
 
-/// A single exported function.
+/// One exported function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportedFunction {
-    /// Ordinal number.
+    /// The ordinal number.
     pub ordinal: u32,
-    /// Function name (if exported by name).
+    /// The function name, if the function is exported by name.
     pub name: Option<String>,
-    /// Additional names that resolve to the same ordinal/EAT slot.
+    /// More names that resolve to the same ordinal and EAT slot.
     pub aliases: Vec<String>,
-    /// RVA of the function, or forwarded name.
+    /// The RVA of the function, or the forwarder name.
     pub address: ExportAddress,
 }
 
 /// The address of an exported function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportAddress {
-    /// RVA to the function.
+    /// The RVA of the function.
     Rva(u32),
-    /// Forwarded to another DLL (e.g., "NTDLL.RtlAllocateHeap").
+    /// A forwarder to a function in another DLL (for example "NTDLL.RtlAllocateHeap").
     Forwarder(String),
 }
 
 /// The complete export table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExportTable {
-    /// Export directory header.
+    /// The export directory header.
     pub directory: ExportDirectory,
-    /// DLL name.
+    /// The DLL name.
     pub dll_name: String,
-    /// List of exported functions.
+    /// The exported functions.
     pub exports: Vec<ExportedFunction>,
 }
 
 impl ExportTable {
-    /// Parse export table from a PE file.
-    /// `export_rva` is the RVA from the data directory.
-    /// `export_size` is the size from the data directory (used to detect forwarders).
-    /// `read_at_rva` is a closure that reads bytes at an RVA.
+    /// Parse an export table from a PE file.
+    ///
+    /// - `export_rva` is the RVA from the data directory.
+    /// - `export_size` is the size from the data directory. The parser uses it to find forwarders.
+    /// - `read_at_rva` is a closure that reads bytes at an RVA.
     ///
     /// # Errors
     ///
-    /// Returns an error if `export_size` is smaller than
-    /// `IMAGE_EXPORT_DIRECTORY`, if the directory or any table, name, or
-    /// forwarder string cannot be read, if the function count exceeds the
-    /// safety limit or is smaller than the name count, if a table lies
-    /// outside the export directory range, if an RVA or ordinal overflows, or
-    /// if a name references an empty address-table slot.
+    /// Returns an error in these conditions:
+    /// - `export_size` is smaller than `IMAGE_EXPORT_DIRECTORY`.
+    /// - The parser cannot read the directory, a table, a name or a forwarder string.
+    /// - The function count is more than the safety limit, or less than the name count.
+    /// - A table is outside the export directory range.
+    /// - An RVA or an ordinal overflows.
+    /// - A name refers to an empty slot in the address table.
     pub fn parse<F>(export_rva: u32, export_size: u32, read_at_rva: F) -> Result<Self>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -213,7 +216,7 @@ impl ExportTable {
                 ExportDirectory::SIZE
             )));
         }
-        // Read export directory
+        // Read the export directory.
         let dir_data =
             read_at_rva(export_rva, ExportDirectory::SIZE).ok_or(Error::invalid_rva(export_rva))?;
         let directory = ExportDirectory::parse(&dir_data)?;
@@ -230,7 +233,7 @@ impl ExportTable {
             ));
         }
 
-        // Read DLL name
+        // Read the DLL name.
         let dll_name = Self::read_string(
             &read_at_rva,
             directory.name_rva,
@@ -239,7 +242,7 @@ impl ExportTable {
             "export DLL name",
         )?;
 
-        // Read exports
+        // Read the exports.
         let exports = Self::read_exports(&read_at_rva, &directory, export_rva, export_size)?;
 
         Ok(Self {
@@ -297,9 +300,11 @@ impl ExportTable {
         Ok(exports)
     }
 
-    /// Check that the address, name-pointer, and ordinal tables all lie inside
-    /// the export directory range. The name count can exceed the function
-    /// count, because several names (aliases) can refer to one function.
+    /// Check that the address table, the name pointer table and the ordinal table are all in
+    /// the export directory range.
+    ///
+    /// The name count can be more than the function count, because many names (aliases) can
+    /// refer to one function.
     fn validate_tables(dir: &ExportDirectory, export_rva: u32, export_size: u32) -> Result<()> {
         crate::parse_utils::bounded_table_range(
             dir.address_of_functions,
@@ -328,8 +333,10 @@ impl ExportTable {
         Ok(())
     }
 
-    /// Read the Export Address Table, skipping empty slots and resolving
-    /// entries that point inside the export directory as forwarders.
+    /// Read the export address table (EAT).
+    ///
+    /// The function skips empty slots. An entry that points into the export directory is a
+    /// forwarder.
     fn read_address_table<F>(
         read_at_rva: &F,
         dir: &ExportDirectory,
@@ -357,7 +364,7 @@ impl ExportTable {
             )?);
 
             if func_rva == 0 {
-                continue; // Empty slot
+                continue; // Empty slot.
             }
 
             let ordinal = dir
@@ -365,7 +372,7 @@ impl ExportTable {
                 .checked_add(i)
                 .ok_or_else(|| Error::invalid_data_directory("export ordinal overflow"))?;
 
-            // Check if this is a forwarder (RVA points within export section)
+            // An RVA in the export directory range is a forwarder.
             let address = if func_rva >= export_rva && func_rva < export_end {
                 let fwd_name = Self::read_string(
                     read_at_rva,
@@ -389,8 +396,10 @@ impl ExportTable {
         Ok(exports)
     }
 
-    /// Read name-pointer and ordinal table entry `index` and attach the name
-    /// to the export it references (as an alias if it already has a name).
+    /// Read entry `index` of the name pointer table and the ordinal table.
+    ///
+    /// The function attaches the name to the export that the entry refers to. If that export
+    /// already has a name, the function adds the name as an alias.
     fn read_name_entry<F>(
         read_at_rva: &F,
         dir: &ExportDirectory,
@@ -402,7 +411,7 @@ impl ExportTable {
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
     {
-        // Read name RVA
+        // Read the name RVA.
         let name_ptr_rva = dir
             .address_of_names
             .checked_add(index.checked_mul(4).ok_or_else(|| {
@@ -415,7 +424,7 @@ impl ExportTable {
             "export name pointer",
         )?);
 
-        // Read ordinal index
+        // Read the ordinal index.
         let ord_rva = dir
             .address_of_name_ordinals
             .checked_add(index.checked_mul(2).ok_or_else(|| {
@@ -424,7 +433,7 @@ impl ExportTable {
             .ok_or_else(|| Error::invalid_data_directory("export ordinal-table RVA overflow"))?;
         let ord_index = u16::from_le_bytes(read_array_rva(read_at_rva, ord_rva, "export ordinal")?);
 
-        // Read name
+        // Read the name.
         let name = Self::read_string(
             read_at_rva,
             name_rva,
@@ -433,7 +442,7 @@ impl ExportTable {
             "export function name",
         )?;
 
-        // Match to export
+        // Find the export that has this ordinal.
         let ordinal = dir
             .base
             .checked_add(u32::from(ord_index))
@@ -454,13 +463,13 @@ impl ExportTable {
         Ok(())
     }
 
-    /// Check if the export table is empty.
+    /// Return `true` if the export table has no exports.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.exports.is_empty()
     }
 
-    /// Find an export by name.
+    /// Find an export by name or by alias.
     #[must_use]
     pub fn find_by_name(&self, name: &str) -> Option<&ExportedFunction> {
         self.exports.iter().find(|export| {
@@ -474,7 +483,7 @@ impl ExportTable {
         self.exports.iter().find(|e| e.ordinal == ordinal)
     }
 
-    /// Add an exported function by RVA.
+    /// Add an exported function at an RVA.
     ///
     /// # Panics
     ///
@@ -484,7 +493,7 @@ impl ExportTable {
             .expect("export ordinal overflow: use try_add_export()");
     }
 
-    /// Add an exported function by RVA.
+    /// Add an exported function at an RVA.
     ///
     /// The new export gets the ordinal after the highest existing ordinal.
     /// If the table has no exports, the new export gets the ordinal base.
@@ -548,21 +557,21 @@ impl ExportTable {
     }
 }
 
-/// Builder for serializing export tables to section data.
+/// Serialize an export table to section data.
 #[derive(Debug)]
 pub struct ExportTableBuilder {
-    /// Base RVA where the export section will be placed.
+    /// The RVA at which the export data starts.
     pub base_rva: u32,
 }
 
 impl ExportTableBuilder {
-    /// Create a new builder.
+    /// Create a builder for export data at the RVA `base_rva`.
     #[must_use]
     pub fn new(base_rva: u32) -> Self {
         Self { base_rva }
     }
 
-    /// Calculate the total size needed for the export section.
+    /// Calculate the total size of the export data.
     ///
     /// # Panics
     ///
@@ -573,15 +582,18 @@ impl ExportTableBuilder {
             .expect("export table size overflow: use try_calculate_size()")
     }
 
-    /// Calculate the serialized size while validating sparse ordinals, names,
-    /// and all intermediate offsets.
+    /// Calculate the serialized size of the export data.
+    ///
+    /// The function also validates sparse ordinals, names and all intermediate offsets.
     ///
     /// # Errors
     ///
-    /// Returns an error if an export ordinal is below the ordinal base or
-    /// duplicated, if a named export's ordinal index does not fit in `u16`, if
-    /// the sparse address table exceeds the safety limit, if a name or
-    /// forwarder contains an embedded NUL byte, or if any size overflows.
+    /// Returns an error in these conditions:
+    /// - An export ordinal is below the ordinal base, or two exports have the same ordinal.
+    /// - The ordinal index of a named export does not fit in `u16`.
+    /// - The sparse address table is larger than the safety limit.
+    /// - A name or a forwarder contains a NUL byte.
+    /// - A size overflows.
     pub fn try_calculate_size(table: &ExportTable) -> Result<usize> {
         if table.exports.is_empty() && table.dll_name.is_empty() {
             return Ok(0);
@@ -589,7 +601,7 @@ impl ExportTableBuilder {
         Ok(export_layout(table)?.total_size)
     }
 
-    /// Build the export section data and return (`section_data`, `export_size`).
+    /// Build the export data and returns (`section_data`, `export_size`).
     ///
     /// # Panics
     ///
@@ -600,17 +612,22 @@ impl ExportTableBuilder {
             .expect("export table build failed: use try_build() for fallible serialization")
     }
 
-    /// Build an export table while preserving sparse EAT slots and all names
-    /// associated with an ordinal.
+    /// Build the export data.
     ///
-    /// Returns the serialized export data (directory, address table, name
-    /// pointer and ordinal tables, then strings) and its size in bytes.
+    /// The function keeps sparse EAT slots and all names of each ordinal.
+    ///
+    /// It returns the serialized export data and its size in bytes. The data holds, in this
+    /// order:
+    /// 1. The directory.
+    /// 2. The address table.
+    /// 3. The name pointer table and the ordinal table.
+    /// 4. The strings.
     ///
     /// # Errors
     ///
-    /// Returns an error for every condition of [`Self::try_calculate_size`],
-    /// or if the serialized size or any RVA in the range starting at
-    /// `base_rva` exceeds `u32`.
+    /// Returns an error for each condition of [`Self::try_calculate_size`]. Also returns an
+    /// error if the serialized size, or an RVA in the range that starts at `base_rva`, does not
+    /// fit in `u32`.
     pub fn try_build(&self, table: &ExportTable) -> Result<(Vec<u8>, u32)> {
         if table.exports.is_empty() && table.dll_name.is_empty() {
             return Ok((Vec::new(), 0));
@@ -630,11 +647,11 @@ impl ExportTableBuilder {
         let (mut names, string_pos) = self.write_names(&mut data, table, &layout)?;
         let eat_entries = self.write_forwarders(&mut data, table, &layout, string_pos)?;
 
-        // Sort named exports by name for binary search compatibility
+        // Sort the named exports by name, so that a binary search can find them.
         names.sort_by(|left, right| left.name.cmp(right.name));
         write_tables(&mut data, &layout, &eat_entries, &names)?;
 
-        // Build and write directory
+        // Build and write the directory.
         let directory = ExportDirectory {
             characteristics: table.directory.characteristics,
             time_date_stamp: table.directory.time_date_stamp,
@@ -671,10 +688,10 @@ impl ExportTableBuilder {
         Ok((data, total_size_u32))
     }
 
-    /// Write every function name and alias at the start of the string area.
+    /// Write each function name and alias at the start of the string area.
     ///
-    /// Returns an entry for each written name, in table order. Also returns
-    /// the offset after the last name.
+    /// Returns one entry for each written name, in table order. Also returns the offset after
+    /// the last name.
     fn write_names<'a>(
         &self,
         data: &mut [u8],
@@ -709,10 +726,10 @@ impl ExportTableBuilder {
         Ok((names, string_pos))
     }
 
-    /// Write the forwarder strings from `string_pos` on.
+    /// Write the forwarder strings, starting at offset `string_pos`.
     ///
-    /// Returns the sparse EAT. Each slot holds a function RVA, a forwarder
-    /// string RVA, or 0 for an empty slot.
+    /// Returns the sparse EAT. Each slot holds a function RVA, a forwarder string RVA, or 0 for
+    /// an empty slot.
     fn write_forwarders(
         &self,
         data: &mut [u8],
@@ -886,7 +903,7 @@ fn put_c_string(data: &mut [u8], offset: usize, value: &str) -> Result<usize> {
 ///
 /// # Errors
 ///
-/// Returns an error if the bytes cannot be read.
+/// Returns an error if the function cannot read the bytes.
 fn read_array_rva<const N: usize, F>(read_at_rva: &F, rva: u32, context: &str) -> Result<[u8; N]>
 where
     F: Fn(u32, usize) -> Option<Vec<u8>>,

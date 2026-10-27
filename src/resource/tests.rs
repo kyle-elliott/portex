@@ -34,17 +34,17 @@ fn test_resource_directory_header_roundtrip() {
 
 #[test]
 fn test_resource_entry_flags() {
-    // Test directory entry with name
+    // Test a directory entry that has a name.
     let entry = ResourceDirectoryEntry {
-        name_or_id: 0x8000_1000,     // High bit set = named
-        offset_to_data: 0x8000_2000, // High bit set = directory
+        name_or_id: 0x8000_1000,     // The high bit is set: the entry is named.
+        offset_to_data: 0x8000_2000, // The high bit is set: the entry is a directory.
     };
     assert!(entry.is_named());
     assert!(entry.is_directory());
     assert_eq!(entry.name_offset(), 0x1000);
     assert_eq!(entry.data_offset(), 0x2000);
 
-    // Test ID entry pointing to data
+    // Test an ID entry that points to data.
     let entry2 = ResourceDirectoryEntry {
         name_or_id: 16, // RT_VERSION
         offset_to_data: 0x3000,
@@ -70,7 +70,7 @@ fn test_resource_builder_single_resource() {
     assert!(size > 0);
     assert_eq!(data.len(), size as usize);
 
-    // Verify we can parse the built data
+    // Make sure that the parser can read the built data.
     let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
         let offset = (rva - 0x3000) as usize;
         if offset + len <= data.len() {

@@ -72,23 +72,25 @@ impl PeBuilder {
     #[must_use]
     pub fn machine(mut self, machine: MachineType) -> Self {
         self.machine = machine;
-        // Auto-detect 64-bit from machine type
+        // Get the PE32 or PE32+ width from the machine type.
         self.is_64bit = machine.is_64_bit();
-        // Adjust default image base
+        // Use the default image base for a 32-bit image.
         if !self.is_64bit {
             self.image_base = 0x0040_0000; // Default for 32-bit
         }
         self
     }
 
-    /// Set the subsystem (GUI, console, etc).
+    /// Set the subsystem, for example GUI or console.
     #[must_use]
     pub fn subsystem(mut self, subsystem: Subsystem) -> Self {
         self.subsystem = subsystem;
         self
     }
 
-    /// Set whether this is a 64-bit PE (PE32+). Usually auto-detected from machine type.
+    /// Set whether the image is a 64-bit PE (PE32+).
+    ///
+    /// [`Self::machine`] usually sets this value from the machine type.
     #[must_use]
     pub fn pe32_plus(mut self, is_64bit: bool) -> Self {
         self.is_64bit = is_64bit;
@@ -102,7 +104,7 @@ impl PeBuilder {
         self
     }
 
-    /// Set the entry point RVA.
+    /// Set the entry point (`AddressOfEntryPoint`, an RVA).
     #[must_use]
     pub fn entry_point(mut self, rva: u32) -> Self {
         self.entry_point = rva;
@@ -123,14 +125,14 @@ impl PeBuilder {
         self
     }
 
-    /// Set DLL characteristics flags.
+    /// Set the DLL characteristics flags (`DllCharacteristics`).
     #[must_use]
     pub fn dll_characteristics(mut self, flags: u16) -> Self {
         self.dll_characteristics = flags;
         self
     }
 
-    /// Mark this as a DLL instead of an executable.
+    /// Mark the image as a DLL (`true`) or as an executable (`false`).
     #[must_use]
     pub fn dll(mut self, is_dll: bool) -> Self {
         self.is_dll = is_dll;
@@ -145,28 +147,33 @@ impl PeBuilder {
         self
     }
 
-    /// Build the PE image, panicking if the requested layout is invalid.
-    /// Prefer [`Self::try_build`] when values come from an untrusted source.
+    /// Build the PE image, or panic if the requested layout is not valid.
+    ///
+    /// Use [`Self::try_build`] if the values come from an untrusted source.
     ///
     /// # Panics
     ///
-    /// Panics whenever [`Self::try_build`] would return an error.
+    /// Panics if [`Self::try_build`] returns an error.
     #[must_use]
     pub fn build(self) -> PeImage {
         self.try_build()
             .expect("PE builder failed: use PeBuilder::try_build() to handle invalid settings")
     }
 
-    /// Build the PE image with checked machine, width, alignment, and size
-    /// relationships.
+    /// Build the PE image after checks of the machine type, width, alignment and sizes.
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::InvalidSection`](crate::error::ErrorKind::InvalidSection)
-    /// if a PE32 image base exceeds `u32`, the image base is not 64-KiB aligned,
-    /// the machine type does not match the optional-header width, there are too
-    /// many sections, or a section's data exceeds `u32`. Also propagates any error
-    /// from the layout update.
+    /// Returns [`ErrorKind::InvalidSection`](crate::error::ErrorKind::InvalidSection) if:
+    ///
+    /// - The image base of a PE32 image does not fit in a `u32`.
+    /// - The image base is not aligned to 64 KiB.
+    /// - The machine type does not match the width of the optional header.
+    /// - There are more sections than
+    ///   [`MAX_NUMBER_OF_SECTIONS`](crate::pe::MAX_NUMBER_OF_SECTIONS).
+    /// - The data of a section does not fit in a `u32`.
+    ///
+    /// Also propagates any error from [`PeImage::try_update_layout`].
     pub fn try_build(self) -> Result<PeImage> {
         if !self.is_64bit && self.image_base > u64::from(u32::MAX) {
             return Err(Error::invalid_section(format!(
@@ -212,7 +219,7 @@ impl PeBuilder {
         // Create sections
         let sections = self.create_sections();
 
-        // Create PE and update layout
+        // Create the PE image and update the layout.
         let mut pe = PeImage {
             dos_header,
             dos_stub: Self::default_dos_stub(),
@@ -375,8 +382,9 @@ impl PeBuilder {
     }
 
     fn default_dos_stub() -> Vec<u8> {
-        // Minimal DOS stub: "This program cannot be run in DOS mode.\r\n$"
-        // Padded with zeros to 64 bytes (0x40 to 0x80) to reach the PE header at 0x80.
+        // Minimal DOS stub: "This program cannot be run in DOS mode.\r\n$".
+        // Pad the stub with zeros to 64 bytes (0x40 to 0x80). The PE header then starts at file
+        // offset 0x80.
         let msg = b"\x0e\x1f\xba\x0e\x00\xb4\x09\xcd\x21\xb8\x01\x4c\xcd\x21This program cannot be run in DOS mode.\r\r\n$";
         let mut stub = msg.to_vec();
         stub.resize(64, 0);

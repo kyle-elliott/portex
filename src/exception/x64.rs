@@ -3,8 +3,9 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// `RUNTIME_FUNCTION` entry for x64 (12 bytes).
-/// Used in .pdata section for exception handling.
+/// An x64 `RUNTIME_FUNCTION` entry of 12 bytes.
+///
+/// The `.pdata` section uses these entries for exception handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[expect(
     clippy::struct_field_names,
@@ -23,7 +24,7 @@ impl RuntimeFunction {
     /// Size of one x64 `RUNTIME_FUNCTION` record in bytes.
     pub const SIZE: usize = 12;
 
-    /// Parse from bytes.
+    /// Parse an entry from little-endian bytes.
     ///
     /// # Errors
     /// Returns an error if `data` is shorter than [`Self::SIZE`].
@@ -39,7 +40,7 @@ impl RuntimeFunction {
         })
     }
 
-    /// Serialize to bytes.
+    /// Serialize the entry to little-endian bytes.
     #[must_use]
     pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
@@ -49,20 +50,20 @@ impl RuntimeFunction {
         buf
     }
 
-    /// Get the function size in bytes.
+    /// Return the function size in bytes.
     #[must_use]
     pub fn size(self) -> u32 {
         self.end_address.saturating_sub(self.begin_address)
     }
 
-    /// Check if an RVA is within this function.
+    /// Return `true` if the function contains `rva`.
     #[must_use]
     pub fn contains_rva(self, rva: u32) -> bool {
         rva >= self.begin_address && rva < self.end_address
     }
 }
 
-/// The complete exception directory (.pdata).
+/// The complete x64 exception directory (`.pdata`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExceptionDirectory {
     /// List of runtime function entries.
@@ -70,11 +71,15 @@ pub struct ExceptionDirectory {
 }
 
 impl ExceptionDirectory {
-    /// Parse exception directory from a PE.
+    /// Parse the x64 exception directory of a PE image.
+    ///
+    /// `pdata_rva` is the RVA of the table. `read_at_rva` reads bytes at an RVA.
     ///
     /// # Errors
-    /// Returns an error if `pdata_size` is not a multiple of the record size,
-    /// an entry cannot be read, or the entries fail [`Self::validate`].
+    /// Returns an error in these conditions:
+    /// - `pdata_size` is not a multiple of the record size.
+    /// - An entry cannot be read.
+    /// - The entries fail [`Self::validate`].
     pub fn parse<F>(pdata_rva: u32, pdata_size: u32, read_at_rva: F) -> Result<Self>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -98,7 +103,7 @@ impl ExceptionDirectory {
                 .ok_or(Error::invalid_rva(entry_rva))?;
 
             let func = RuntimeFunction::parse(&data)?;
-            // Skip null entries
+            // Skip null entries.
             if func.begin_address != 0 || func.end_address != 0 {
                 functions.push(func);
             }
@@ -147,8 +152,10 @@ impl ExceptionDirectory {
         Ok(byte_size)
     }
 
-    /// Check that entries are nonempty, sorted, non-overlapping and that the
-    /// table size fits in `u32`.
+    /// Check the entries and the table size.
+    ///
+    /// Each entry must be nonempty. The entries must be sorted and must not overlap. The table
+    /// size must fit in `u32`.
     ///
     /// # Errors
     /// Returns an error describing the first violation found.
@@ -172,25 +179,27 @@ impl ExceptionDirectory {
         Ok(())
     }
 
-    /// Find the runtime function containing an RVA.
+    /// Find the runtime function that contains `rva`.
     #[must_use]
     pub fn find_function(&self, rva: u32) -> Option<&RuntimeFunction> {
         self.functions.iter().find(|f| f.contains_rva(rva))
     }
 
-    /// Get the number of functions.
+    /// Return the number of functions.
     #[must_use]
     pub fn len(&self) -> usize {
         self.functions.len()
     }
 
-    /// Check if empty.
+    /// Return `true` if the directory has no functions.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.functions.is_empty()
     }
 
     /// Add a runtime function entry.
+    ///
+    /// `begin`, `end` and `unwind_info` are RVAs.
     pub fn add_function(&mut self, begin: u32, end: u32, unwind_info: u32) {
         self.functions.push(RuntimeFunction {
             begin_address: begin,

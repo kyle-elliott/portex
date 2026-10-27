@@ -1,38 +1,39 @@
 # Portex
 
-Portex is a `no_std`-friendly parser, editor, and builder for PE executable
-images. It deliberately distinguishes byte-for-byte files from images already
-mapped by a loader, because their RVA-to-source translations are different.
+Portex is a parser, editor and builder for PE executable images. It works with `no_std`.
+Portex keeps raw files and loader-mapped images apart, because each layout translates an RVA to
+a different source offset.
 
 [![CI](https://github.com/napbat/portex/actions/workflows/ci.yml/badge.svg)](https://github.com/napbat/portex/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 ## What it supports
 
-- Raw PE files, loader-mapped images, and mapped images relocated to a runtime
-  base.
-- PE32 and PE32+ headers, checked RVA/VA conversion, section layout, zero-filled
-  virtual tails, overlays, Authenticode certificate tables, and checksums.
-- Imports, delay imports, bound imports, sparse/aliased exports, resources, base
-  relocations, TLS, debug records, load configuration, and x64/ARM/ARM64
-  exception tables.
-- Load configuration bounded by its declared size, including legacy prefixes.
-  A partial field is an error; an absent whole field remains zero.
-- x64 unwind serialization with a borrowed replacement language payload through
+- Raw PE files, loader-mapped images, and mapped images that are relocated to a runtime base.
+- PE32 and PE32+ headers, checked RVA/VA conversion, and section layout.
+- Zero-filled virtual tails of sections, overlays, Authenticode certificate tables, and
+  checksums.
+- Imports, delay imports, bound imports, and exports (also sparse and aliased exports).
+- Resources, base relocations, TLS, debug records, and the load configuration.
+- Exception tables for x64, ARM and ARM64.
+- A load configuration that is limited by its declared size, also with legacy prefixes. A
+  partial field is an error. A field that is fully absent stays zero.
+- Serialization of x64 unwind data with borrowed handler data for a different language, through
   `UnwindInfo::try_to_bytes_with_handler_data`.
-- Rich headers plus the PE-level CLR/CLI header and raw metadata blob.
-- Lossless raw-file round trips through `PeFile`, including noncanonical gaps,
-  certificate bytes, and arbitrary overlays when the layout is unchanged.
-- Strict malformed-input checks, fallible builders, structural validation, and
-  both sequential and positional I/O.
+- Rich headers, the CLR/CLI header of the PE image, and the raw metadata blob.
+- Lossless round trips of raw files through `PeFile`. When the layout does not change, `PeFile`
+  keeps noncanonical gaps, certificate bytes and overlays.
+- Strict checks for malformed input, fallible builders, and structural validation.
+- Sequential I/O and positional I/O.
 - `no_std + alloc` support. Sequential I/O uses
-  [`nostdio`](https://github.com/coconutbird/nostdio); positional `ReadAt`
-  access remains available for mapped and remote images.
+  [`nostdio`](https://github.com/coconutbird/nostdio). Positional `ReadAt` access is also
+  available for mapped images and remote images.
 
-Portex targets PE executable images such as executables, DLLs, drivers, and
-UEFI-style images. Standalone COFF object files and COFF symbol tables are out
-of scope. CLR metadata streams and tables are also intentionally out of scope;
-pass `PeImage::clr_metadata()` to a metadata crate such as `clrmeta`.
+Portex targets PE executable images, for example executables, DLLs, drivers and UEFI-style
+images. Portex does not support standalone COFF object files or COFF symbol tables.
+
+Portex does not parse CLR metadata streams or tables. To parse them, give
+`PeImage::clr_metadata()` to a metadata crate, for example `clrmeta`.
 
 ## Installation
 
@@ -50,19 +51,23 @@ portex = { version = "0.3", default-features = false }
 
 Portex 0.3 requires Rust 1.88 or newer.
 
-The default `std` feature adds filesystem helpers, `FileReader`, standard
-I/O error conversion, and `nostdio`'s standard-library integration. Parsing,
-building, mapped-image handling, validation, in-memory readers, and stream APIs
-remain available without it.
+The default `std` feature adds:
+
+- filesystem helpers and `FileReader`
+- conversion from standard I/O errors
+- the standard-library integration of `nostdio`
+
+Without `std`, parsing, building, mapped images, validation, in-memory readers and stream APIs
+are still available.
 
 ## Core types
 
 | Type | Use it for |
 | --- | --- |
-| `PeFile` | A complete raw file whose certificates, gaps, and overlay must be preserved |
-| `PeImage` | A normalized executable image parsed from raw or loader-mapped bytes |
-| `PeHeaders` | Header-only inspection without loading section payloads |
-| `PeBuilder` | Constructing a new executable image |
+| `PeFile` | A full raw file. It keeps the certificates, gaps and overlay |
+| `PeImage` | A normalized executable image, parsed from raw bytes or loader-mapped bytes |
+| `PeHeaders` | The headers only. It does not load section data |
+| `PeBuilder` | Building a new executable image |
 
 ## Quick start
 
@@ -86,8 +91,8 @@ file.write_to_file("modified.exe")?;
 # Ok::<(), portex::Error>(())
 ```
 
-Use `PeImage::parse(raw_bytes)` when overlays and certificates do not need to
-survive rebuilding, or `PeFile::parse(raw_bytes)` when they do.
+Use `PeImage::parse(raw_bytes)` if the rebuilt file does not need the overlays and
+certificates. Use `PeFile::parse(raw_bytes)` if it needs them.
 
 ## Raw files versus mapped images
 
@@ -117,24 +122,24 @@ assert_eq!(relocated.runtime_image_base(), 0x0000_7ff6_0000_0000);
 # Ok::<(), portex::Error>(())
 ```
 
-`PeImage::to_mapped_image()` creates loader-style bytes at the preferred image
-base. `to_mapped_image_at(base)` also applies supported base relocations for a
-different runtime base.
+`PeImage::to_mapped_image()` makes loader-style bytes at the preferred image base.
+`to_mapped_image_at(base)` makes them at a different runtime base. It also applies the
+supported base relocations.
 
-For a remote process or another random-access source, implement `ReadAt` and
-use:
+For a remote process or a different random-access source, implement `ReadAt`. Then use one of
+these functions:
 
 ```text
 PeImage::read_from(&reader, source_offset, SourceLayout::Mapped)
 PeImage::read_mapped_from(&reader, source_offset, runtime_image_base)
 ```
 
-`PeHeaders::rva_to_source_offset` exposes the same layout-aware translation
-without reading all sections.
+`PeHeaders::rva_to_source_offset` does the same layout-aware translation. It does not read all
+sections.
 
 ## Sequential and positional I/O
 
-`nostdio` supplies cursor-based `Read`, `Write`, and `Seek` traits:
+`nostdio` supplies the `Read`, `Write` and `Seek` traits, which use a cursor:
 
 ```rust,no_run
 use portex::PeFile;
@@ -149,10 +154,14 @@ file.write_to(&mut output)?;
 # Ok::<(), portex::Error>(())
 ```
 
-Portex also keeps a positional `ReadAt` abstraction because it is a better fit
-for process memory, sparse address spaces, concurrent callers, and sources that
-must not share cursor state. `SeekReader` adapts a `nostdio::Read + Seek`
-source to `ReadAt`.
+Portex also has the positional `ReadAt` abstraction. `ReadAt` is better for these sources:
+
+- process memory
+- sparse address spaces
+- sources with concurrent callers
+- sources that must not share cursor state
+
+`SeekReader` adapts a `nostdio::Read + Seek` source to `ReadAt`.
 
 ## Building an image
 
@@ -176,12 +185,12 @@ assert!(!raw_file.is_empty());
 # Ok::<(), portex::Error>(())
 ```
 
-Directory builders and image update methods are fallible. Prefer the `try_*`
-variants when input or edits are not fully trusted.
+Directory builders and image update methods are fallible. If the input or the edits are not
+fully trusted, use the `try_*` variants.
 
 ## Module layout
 
-The ergonomic facades cover the common entry points:
+The facade modules contain the usual entry points:
 
 | Module | Contents |
 | --- | --- |
@@ -190,17 +199,15 @@ The ergonomic facades cover the common entry points:
 | `directories` | Imports, exports, resources, relocations, TLS, exceptions, debug, security, CLR hand-off, and related builders |
 | `io` | `nostdio` traits/types plus positional `ReadAt` readers |
 
-Specialized modules such as `import`, `resource`, `reloc`, `security`, and
-`validation` remain public for focused imports.
+Specialized modules, for example `import`, `resource`, `reloc`, `security` and `validation`,
+are also public. Use them to import a specific area.
 
-Nested implementation modules use Rust's modern `module.rs` plus
-`module/child.rs` layout; the older `module/mod.rs` form is intentionally not
-used.
+Nested modules use the `module.rs` and `module/child.rs` layout. Portex does not use the older
+`module/mod.rs` form.
 
 ## Development
 
-Toolchain and pre-commit hooks are managed with
-[`mise`](https://mise.jdx.dev/):
+[`mise`](https://mise.jdx.dev/) manages the toolchain and the pre-commit hooks:
 
 ```bash
 mise install
@@ -208,15 +215,16 @@ mise run precommit-install
 mise run precommit
 ```
 
-The hooks run rustfmt and Clippy over every crate target with both the full
-feature set and `no_std + alloc`, and lint the separate fuzz package. CI runs
-the same matrix plus both test and rustdoc feature modes. Each package manifest
-denies warnings, Clippy's pedantic group, missing docs, and unsafe code (the
-only exception is `BaseAddressReader`), so the policy also applies to direct
-Cargo commands. The Rust examples in this README compile as doctests.
+The hooks run rustfmt and Clippy on all targets of the crate. They do this with all features
+and with `no_std + alloc`. They also lint the separate fuzz package.
 
-Fuzz targets live under `fuzz/` and can be run with `cargo-fuzz` on
-Linux/macOS or WSL:
+CI runs the same checks. CI also runs the tests and rustdoc with both feature sets.
+
+Each package manifest denies warnings, the Clippy pedantic group, missing docs and unsafe code.
+The only unsafe code is `BaseAddressReader`. Direct Cargo commands thus apply the same policy.
+The Rust examples in this README compile as doctests.
+
+The fuzz targets are in `fuzz/`. Run them with `cargo-fuzz` on Linux, macOS or WSL:
 
 ```bash
 cargo +nightly fuzz run fuzz-pe-headers
