@@ -236,7 +236,7 @@ impl ValidationResult {
 
 impl IntoIterator for ValidationResult {
     type Item = ValidationIssue;
-    type IntoIter = alloc::vec::IntoIter<ValidationIssue>;
+    type IntoIter = vec::IntoIter<ValidationIssue>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.issues.into_iter()

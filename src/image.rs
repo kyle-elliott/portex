@@ -5,5 +5,7 @@
 //! Authenticode certificates, and file gaps must survive a round trip.
 
 pub use crate::builder::PeBuilder;
+pub use crate::layout::LayoutConfig;
 pub use crate::pe::{MissingSectionData, ParseOptions, PeHeaders, PeImage, SourceLayout};
 pub use crate::pe_file::PeFile;
+pub use crate::validation::{ValidationCode, ValidationIssue, ValidationLevel, ValidationResult};

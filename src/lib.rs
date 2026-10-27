@@ -69,7 +69,7 @@ extern crate std;
 /// they shadow identical-typed prelude items harmlessly.
 pub(crate) mod prelude {
     pub use alloc::borrow::Cow;
-    pub use alloc::collections::BTreeMap;
+    pub use alloc::collections::{BTreeMap, BTreeSet};
     pub use alloc::format;
     pub use alloc::string::{String, ToString};
     pub use alloc::vec;
@@ -120,7 +120,8 @@ pub use debug::{CodeViewRsds, DebugBuilder, DebugDirectory, DebugInfo, DebugType
 pub use delay_import::{
     DelayImportBuilder, DelayImportDirectory, DelayImportThunk, DelayLoadDescriptor, DelayLoadedDll,
 };
-pub use error::{Error, Result};
+pub use dos::DosHeader;
+pub use error::{Error, ErrorContext, ErrorKind, Result};
 pub use exception::{
     ExceptionBuilder, ExceptionDirectory, ExceptionTable, PackedExceptionDirectory,
     PackedRuntimeFunction, RuntimeFunction, UnwindCode, UnwindInfo, UnwindOpCode,
@@ -144,7 +145,8 @@ pub use reloc::{
     RelocationBlock, RelocationBuilder, RelocationEntry, RelocationTable, RelocationType,
 };
 pub use resource::{
-    Resource, ResourceBuilder, ResourceDirectory, ResourceEntry, ResourceId, ResourceType,
+    Resource, ResourceBuilder, ResourceDataEntry, ResourceDirectory, ResourceDirectoryEntry,
+    ResourceDirectoryHeader, ResourceEntry, ResourceId, ResourceType,
 };
 pub use rich::{RichBuilder, RichEntry, RichHeader};
 pub use section::{Section, SectionHeader};

@@ -1,5 +1,3 @@
-use alloc::collections::BTreeSet;
-
 use super::{
     Error, Resource, ResourceDataEntry, ResourceDirectory, ResourceDirectoryEntry,
     ResourceDirectoryHeader, ResourceId, ResourceType, Result, checked_resource_rva,

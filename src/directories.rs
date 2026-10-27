@@ -29,7 +29,8 @@ pub use crate::reloc::{
     RelocationBlock, RelocationBuilder, RelocationEntry, RelocationTable, RelocationType,
 };
 pub use crate::resource::{
-    Resource, ResourceBuilder, ResourceDirectory, ResourceEntry, ResourceId, ResourceType,
+    Resource, ResourceBuilder, ResourceDataEntry, ResourceDirectory, ResourceDirectoryEntry,
+    ResourceDirectoryHeader, ResourceEntry, ResourceId, ResourceType,
 };
 pub use crate::security::{
     Certificate, CertificateRevision, CertificateType, SecurityBuilder, SecurityDirectory,

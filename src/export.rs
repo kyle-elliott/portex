@@ -51,8 +51,6 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
-use alloc::collections::BTreeSet;
-
 use crate::prelude::*;
 use crate::{Error, Result};
 
