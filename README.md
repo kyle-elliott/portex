@@ -5,7 +5,7 @@ images. It deliberately distinguishes byte-for-byte files from images already
 mapped by a loader, because their RVA-to-source translations are different.
 
 [![CI](https://github.com/napbat/portex/actions/workflows/ci.yml/badge.svg)](https://github.com/napbat/portex/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 ## What it supports
 
@@ -223,4 +223,17 @@ cargo +nightly fuzz run fuzz-pe-parse
 
 ## License
 
-Licensed under the [MIT License](LICENSE).
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or
+  <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in Portex by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
