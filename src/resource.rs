@@ -299,7 +299,8 @@ impl ResourceDirectoryEntry {
     /// Get the ID from the low 16 bits (only valid if [`Self::is_named`] is false).
     #[must_use]
     pub fn id(self) -> u16 {
-        (self.name_or_id & 0xFFFF) as u16
+        let [low, high, _, _] = self.name_or_id.to_le_bytes();
+        u16::from_le_bytes([low, high])
     }
 
     /// Check if this points to a subdirectory (vs data entry).

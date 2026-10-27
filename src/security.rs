@@ -130,29 +130,23 @@ impl Certificate {
     /// if `dwLength` is smaller than the header or the (8-byte aligned) length
     /// exceeds `data`.
     pub fn parse(data: &[u8]) -> Result<(Self, usize)> {
-        if data.len() < Self::HEADER_SIZE {
+        let Some((header, _)) = data.split_first_chunk::<{ Self::HEADER_SIZE }>() else {
             return Err(Error::buffer_too_small(Self::HEADER_SIZE, data.len()));
-        }
-
-        let length_u32 = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        };
+        let [l0, l1, l2, l3, r0, r1, t0, t1] = *header;
+        let length_u32 = u32::from_le_bytes([l0, l1, l2, l3]);
         let length = usize::try_from(length_u32)
             .map_err(|_| Error::invalid_data_directory("certificate length exceeds usize"))?;
-        let revision_raw = u16::from_le_bytes([data[4], data[5]]);
-        let cert_type_raw = u16::from_le_bytes([data[6], data[7]]);
+        let revision = CertificateRevision::from_u16(u16::from_le_bytes([r0, r1]));
+        let certificate_type = CertificateType::from_u16(u16::from_le_bytes([t0, t1]));
 
-        if length < Self::HEADER_SIZE || length > data.len() {
+        let Some(cert_data) = data.get(Self::HEADER_SIZE..length).map(<[u8]>::to_vec) else {
             return Err(Error::invalid_data_directory(format!(
                 "invalid certificate length: {} (available: {})",
                 length,
                 data.len()
             )));
-        }
-
-        let revision = CertificateRevision::from_u16(revision_raw);
-
-        let certificate_type = CertificateType::from_u16(cert_type_raw);
-
-        let cert_data = data[Self::HEADER_SIZE..length].to_vec();
+        };
 
         // Certificates are 8-byte aligned
         let padded_length = length
@@ -196,21 +190,20 @@ impl SecurityDirectory {
     /// error from [`Certificate::parse`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut certificates = Vec::new();
-        let mut offset = 0;
+        let mut rest = data;
 
-        while offset < data.len() {
-            if data.len() - offset < Certificate::HEADER_SIZE {
+        while !rest.is_empty() {
+            if rest.len() < Certificate::HEADER_SIZE {
                 return Err(Error::invalid_data_directory(format!(
                     "{} trailing bytes remain after the final certificate",
-                    data.len() - offset
+                    rest.len()
                 )));
             }
 
-            let (cert, consumed) = Certificate::parse(&data[offset..])?;
+            let (cert, consumed) = Certificate::parse(rest)?;
             certificates.push(cert);
-            offset = offset
-                .checked_add(consumed)
-                .ok_or_else(|| Error::invalid_data_directory("certificate-table size overflow"))?;
+            // `Certificate::parse` returns `consumed <= rest.len()`.
+            rest = rest.get(consumed..).unwrap_or_default();
         }
 
         Ok(Self { certificates })
@@ -308,28 +301,27 @@ impl SecurityBuilder {
         }
 
         let total_size = Self::try_calculate_size(directory)?;
-        let mut data = vec![0u8; total_size];
-        let mut offset = 0;
+        let mut data = Vec::with_capacity(total_size);
 
         for cert in &directory.certificates {
             // Write length (header + data, unpadded)
-            let cert_length = Certificate::HEADER_SIZE + cert.data.len();
-            let cert_length_u32 = u32::try_from(cert_length)
-                .map_err(|_| Error::invalid_data_directory("certificate length exceeds u32"))?;
-            data[offset..offset + 4].copy_from_slice(&cert_length_u32.to_le_bytes());
+            let cert_length_u32 = Certificate::HEADER_SIZE
+                .checked_add(cert.data.len())
+                .and_then(|length| u32::try_from(length).ok())
+                .ok_or_else(|| Error::invalid_data_directory("certificate length exceeds u32"))?;
+            data.extend_from_slice(&cert_length_u32.to_le_bytes());
+            data.extend_from_slice(&cert.revision.as_u16().to_le_bytes());
+            data.extend_from_slice(&cert.certificate_type.as_u16().to_le_bytes());
+            data.extend_from_slice(&cert.data);
 
-            // Write revision
-            data[offset + 4..offset + 6].copy_from_slice(&cert.revision.as_u16().to_le_bytes());
-
-            // Write type
-            data[offset + 6..offset + 8]
-                .copy_from_slice(&cert.certificate_type.as_u16().to_le_bytes());
-
-            // Write certificate data
-            data[offset + 8..offset + 8 + cert.data.len()].copy_from_slice(&cert.data);
-
-            // Move to next 8-byte aligned position
-            offset += (cert_length + 7) & !7;
+            // Pad to the next 8-byte aligned position. Each certificate starts
+            // at an aligned position, so this aligns the certificate length.
+            let padded_end = data
+                .len()
+                .checked_add(7)
+                .map(|value| value & !7)
+                .ok_or_else(|| Error::invalid_data_directory("certificate alignment overflow"))?;
+            data.resize(padded_end, 0);
         }
 
         Ok(data)
@@ -433,5 +425,48 @@ mod tests {
         let size = SecurityBuilder::calculate_size(&dir);
         assert_eq!(size % 8, 0); // Must be 8-byte aligned
         assert_eq!(size, 16); // 11 rounded up to 16
+    }
+
+    #[test]
+    fn test_builder_two_certificates_layout() {
+        let first = Certificate {
+            length: 0,
+            revision: CertificateRevision::Revision2,
+            certificate_type: CertificateType::PkcsSignedData,
+            data: vec![1, 2, 3],
+        };
+        let second = Certificate {
+            length: 0,
+            revision: CertificateRevision::Revision1,
+            certificate_type: CertificateType::X509,
+            data: vec![4; 8],
+        };
+        let dir = SecurityDirectory {
+            certificates: vec![first, second],
+        };
+
+        let data = SecurityBuilder::try_build(&dir).unwrap();
+        assert_eq!(
+            data.len(),
+            SecurityBuilder::try_calculate_size(&dir).unwrap()
+        );
+        assert_eq!(data.len(), 32);
+        assert_eq!(&data[0..4], &11u32.to_le_bytes());
+        assert_eq!(&data[11..16], &[0; 5]);
+        assert_eq!(&data[16..20], &16u32.to_le_bytes());
+
+        let parsed = SecurityDirectory::parse(&data).unwrap();
+        assert_eq!(parsed.certificates.len(), 2);
+        assert_eq!(parsed.certificates[1].data, vec![4; 8]);
+    }
+
+    #[test]
+    fn test_certificate_length_out_of_range() {
+        let mut data = [0u8; 16];
+        data[0..4].copy_from_slice(&4u32.to_le_bytes());
+        assert!(Certificate::parse(&data).is_err());
+        data[0..4].copy_from_slice(&17u32.to_le_bytes());
+        assert!(Certificate::parse(&data).is_err());
+        assert!(SecurityDirectory::parse(&data[..12]).is_err());
     }
 }

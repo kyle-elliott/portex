@@ -70,9 +70,9 @@ impl DosHeader {
     /// Returns a buffer-too-small error if `data` is shorter than [`Self::SIZE`],
     /// or an invalid-DOS-signature error if `e_magic` is not [`DOS_SIGNATURE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::SIZE {
+        let Some(data) = data.first_chunk::<{ Self::SIZE }>() else {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
-        }
+        };
 
         let e_magic = u16::from_le_bytes([data[0], data[1]]);
         if e_magic != DOS_SIGNATURE {
@@ -149,13 +149,15 @@ impl DosHeader {
         buf[22..24].copy_from_slice(&self.e_cs.to_le_bytes());
         buf[24..26].copy_from_slice(&self.e_lfarlc.to_le_bytes());
         buf[26..28].copy_from_slice(&self.e_ovno.to_le_bytes());
-        for (i, val) in self.e_res.iter().enumerate() {
-            buf[28 + i * 2..30 + i * 2].copy_from_slice(&val.to_le_bytes());
+        let (res, _) = buf[28..36].as_chunks_mut::<2>();
+        for (out, val) in res.iter_mut().zip(&self.e_res) {
+            *out = val.to_le_bytes();
         }
         buf[36..38].copy_from_slice(&self.e_oemid.to_le_bytes());
         buf[38..40].copy_from_slice(&self.e_oeminfo.to_le_bytes());
-        for (i, val) in self.e_res2.iter().enumerate() {
-            buf[40 + i * 2..42 + i * 2].copy_from_slice(&val.to_le_bytes());
+        let (res2, _) = buf[40..60].as_chunks_mut::<2>();
+        for (out, val) in res2.iter_mut().zip(&self.e_res2) {
+            *out = val.to_le_bytes();
         }
         buf[60..64].copy_from_slice(&self.e_lfanew.to_le_bytes());
         buf

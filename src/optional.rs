@@ -251,31 +251,18 @@ impl OptionalHeader32 {
     /// an invalid-magic error if `Magic` is not [`PE32_MAGIC`], or an
     /// invalid-data-directory error if the declared size overflows.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::BASE_SIZE {
-            return Err(Error::buffer_too_small(Self::BASE_SIZE, data.len()));
-        }
+        let len = data.len();
+        let Some((data, dir_bytes)) = data.split_first_chunk::<{ Self::BASE_SIZE }>() else {
+            return Err(Error::buffer_too_small(Self::BASE_SIZE, len));
+        };
 
         let magic = u16::from_le_bytes([data[0], data[1]]);
         if magic != PE32_MAGIC {
             return Err(Error::invalid_optional_header_magic(magic));
         }
         let number_of_rva_and_sizes = u32::from_le_bytes([data[92], data[93], data[94], data[95]]);
-        let dirs_count = usize::try_from(number_of_rva_and_sizes)
-            .map_err(|_| Error::invalid_data_directory("data-directory count is too large"))?;
-        let total_size = dirs_count
-            .checked_mul(DataDirectory::SIZE)
-            .and_then(|size| Self::BASE_SIZE.checked_add(size))
-            .ok_or_else(|| Error::invalid_data_directory("optional-header size overflow"))?;
-
-        if data.len() < total_size {
-            return Err(Error::buffer_too_small(total_size, data.len()));
-        }
-
-        let mut data_directories = Vec::with_capacity(dirs_count);
-        for i in 0..dirs_count {
-            let offset = Self::BASE_SIZE + i * DataDirectory::SIZE;
-            data_directories.push(DataDirectory::parse(&data[offset..])?);
-        }
+        let data_directories =
+            parse_data_directories(number_of_rva_and_sizes, Self::BASE_SIZE, dir_bytes, len)?;
 
         Ok(Self {
             magic,
@@ -317,7 +304,7 @@ impl OptionalHeader32 {
     /// Serialized size in bytes, including data directories.
     #[must_use]
     pub fn size(&self) -> usize {
-        Self::BASE_SIZE + self.data_directories.len() * DataDirectory::SIZE
+        directories_size(Self::BASE_SIZE, &self.data_directories)
     }
 
     /// Write the PE32 optional header to a buffer.
@@ -327,15 +314,21 @@ impl OptionalHeader32 {
     /// Returns a buffer-too-small error if `buf` is shorter than [`Self::size`].
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         let total_size = self.size();
-        if buf.len() < total_size {
-            return Err(Error::buffer_too_small(total_size, buf.len()));
-        }
-        self.encode_into(buf);
+        let len = buf.len();
+        let Some((fixed, dirs)) = buf
+            .get_mut(..total_size)
+            .and_then(<[u8]>::split_first_chunk_mut::<{ Self::BASE_SIZE }>)
+        else {
+            return Err(Error::buffer_too_small(total_size, len));
+        };
+        *fixed = self.encode_fixed();
+        encode_data_directories(&self.data_directories, dirs);
         Ok(())
     }
 
-    /// Encode the header into `buf`, which must be at least [`Self::size`] bytes.
-    fn encode_into(&self, buf: &mut [u8]) {
+    /// Encode the fixed part of the header, without data directories.
+    fn encode_fixed(&self) -> [u8; Self::BASE_SIZE] {
+        let mut buf = [0u8; Self::BASE_SIZE];
         buf[0..2].copy_from_slice(&self.magic.to_le_bytes());
         buf[2] = self.major_linker_version;
         buf[3] = self.minor_linker_version;
@@ -366,16 +359,60 @@ impl OptionalHeader32 {
         buf[84..88].copy_from_slice(&self.size_of_heap_commit.to_le_bytes());
         buf[88..92].copy_from_slice(&self.loader_flags.to_le_bytes());
         buf[92..96].copy_from_slice(&self.number_of_rva_and_sizes.to_le_bytes());
-        encode_data_directories(&self.data_directories, &mut buf[Self::BASE_SIZE..]);
+        buf
     }
 
     /// Serialize to a byte vector.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; self.size()];
-        self.encode_into(&mut buf);
-        buf
+        serialize(&self.encode_fixed(), &self.data_directories)
     }
+}
+
+/// Parse `NumberOfRvaAndSizes` data directories from `dir_bytes`, the bytes
+/// after a fixed header of `base_size` bytes. `total_len` is the length of
+/// the full input and is used only in errors.
+fn parse_data_directories(
+    number_of_rva_and_sizes: u32,
+    base_size: usize,
+    dir_bytes: &[u8],
+    total_len: usize,
+) -> Result<Vec<DataDirectory>> {
+    let dirs_count = usize::try_from(number_of_rva_and_sizes)
+        .map_err(|_| Error::invalid_data_directory("data-directory count is too large"))?;
+    let dirs_len = dirs_count
+        .checked_mul(DataDirectory::SIZE)
+        .ok_or_else(|| Error::invalid_data_directory("optional-header size overflow"))?;
+    let total_size = base_size
+        .checked_add(dirs_len)
+        .ok_or_else(|| Error::invalid_data_directory("optional-header size overflow"))?;
+    let dir_bytes = dir_bytes
+        .get(..dirs_len)
+        .ok_or_else(|| Error::buffer_too_small(total_size, total_len))?;
+    let (entries, _) = dir_bytes.as_chunks::<{ DataDirectory::SIZE }>();
+    Ok(entries
+        .iter()
+        .copied()
+        .map(DataDirectory::from_bytes)
+        .collect())
+}
+
+/// Serialized size of a header with a `base_size`-byte fixed part and `dirs`.
+fn directories_size(base_size: usize, dirs: &[DataDirectory]) -> usize {
+    // A slice of `DataDirectory` holds at most `isize::MAX` bytes, so
+    // `dirs.len() * DataDirectory::SIZE` is at most `isize::MAX`. Adding a
+    // small fixed header size cannot pass `usize::MAX`.
+    base_size + dirs.len() * DataDirectory::SIZE
+}
+
+/// Concatenate an encoded fixed header and the encoded data directories.
+fn serialize(fixed: &[u8], dirs: &[DataDirectory]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(directories_size(fixed.len(), dirs));
+    buf.extend_from_slice(fixed);
+    for dir in dirs {
+        buf.extend_from_slice(&dir.to_bytes());
+    }
+    buf
 }
 
 /// Encode `dirs` as consecutive `IMAGE_DATA_DIRECTORY` entries at the start of `buf`.
@@ -399,9 +436,10 @@ impl OptionalHeader64 {
     /// an invalid-magic error if `Magic` is not [`PE32PLUS_MAGIC`], or an
     /// invalid-data-directory error if the declared size overflows.
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::BASE_SIZE {
-            return Err(Error::buffer_too_small(Self::BASE_SIZE, data.len()));
-        }
+        let len = data.len();
+        let Some((data, dir_bytes)) = data.split_first_chunk::<{ Self::BASE_SIZE }>() else {
+            return Err(Error::buffer_too_small(Self::BASE_SIZE, len));
+        };
 
         let magic = u16::from_le_bytes([data[0], data[1]]);
         if magic != PE32PLUS_MAGIC {
@@ -409,22 +447,8 @@ impl OptionalHeader64 {
         }
         let number_of_rva_and_sizes =
             u32::from_le_bytes([data[108], data[109], data[110], data[111]]);
-        let dirs_count = usize::try_from(number_of_rva_and_sizes)
-            .map_err(|_| Error::invalid_data_directory("data-directory count is too large"))?;
-        let total_size = dirs_count
-            .checked_mul(DataDirectory::SIZE)
-            .and_then(|size| Self::BASE_SIZE.checked_add(size))
-            .ok_or_else(|| Error::invalid_data_directory("optional-header size overflow"))?;
-
-        if data.len() < total_size {
-            return Err(Error::buffer_too_small(total_size, data.len()));
-        }
-
-        let mut data_directories = Vec::with_capacity(dirs_count);
-        for i in 0..dirs_count {
-            let offset = Self::BASE_SIZE + i * DataDirectory::SIZE;
-            data_directories.push(DataDirectory::parse(&data[offset..])?);
-        }
+        let data_directories =
+            parse_data_directories(number_of_rva_and_sizes, Self::BASE_SIZE, dir_bytes, len)?;
 
         Ok(Self {
             magic,
@@ -475,7 +499,7 @@ impl OptionalHeader64 {
     /// Serialized size in bytes, including data directories.
     #[must_use]
     pub fn size(&self) -> usize {
-        Self::BASE_SIZE + self.data_directories.len() * DataDirectory::SIZE
+        directories_size(Self::BASE_SIZE, &self.data_directories)
     }
 
     /// Write the PE32+ optional header to a buffer.
@@ -485,15 +509,21 @@ impl OptionalHeader64 {
     /// Returns a buffer-too-small error if `buf` is shorter than [`Self::size`].
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         let total_size = self.size();
-        if buf.len() < total_size {
-            return Err(Error::buffer_too_small(total_size, buf.len()));
-        }
-        self.encode_into(buf);
+        let len = buf.len();
+        let Some((fixed, dirs)) = buf
+            .get_mut(..total_size)
+            .and_then(<[u8]>::split_first_chunk_mut::<{ Self::BASE_SIZE }>)
+        else {
+            return Err(Error::buffer_too_small(total_size, len));
+        };
+        *fixed = self.encode_fixed();
+        encode_data_directories(&self.data_directories, dirs);
         Ok(())
     }
 
-    /// Encode the header into `buf`, which must be at least [`Self::size`] bytes.
-    fn encode_into(&self, buf: &mut [u8]) {
+    /// Encode the fixed part of the header, without data directories.
+    fn encode_fixed(&self) -> [u8; Self::BASE_SIZE] {
+        let mut buf = [0u8; Self::BASE_SIZE];
         buf[0..2].copy_from_slice(&self.magic.to_le_bytes());
         buf[2] = self.major_linker_version;
         buf[3] = self.minor_linker_version;
@@ -523,15 +553,13 @@ impl OptionalHeader64 {
         buf[96..104].copy_from_slice(&self.size_of_heap_commit.to_le_bytes());
         buf[104..108].copy_from_slice(&self.loader_flags.to_le_bytes());
         buf[108..112].copy_from_slice(&self.number_of_rva_and_sizes.to_le_bytes());
-        encode_data_directories(&self.data_directories, &mut buf[Self::BASE_SIZE..]);
+        buf
     }
 
     /// Serialize to a byte vector.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; self.size()];
-        self.encode_into(&mut buf);
-        buf
+        serialize(&self.encode_fixed(), &self.data_directories)
     }
 }
 
@@ -545,11 +573,11 @@ impl OptionalHeader {
     /// [`PE32PLUS_MAGIC`], or any error from [`OptionalHeader32::parse`] /
     /// [`OptionalHeader64::parse`].
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < 2 {
+        let Some(&magic_bytes) = data.first_chunk::<2>() else {
             return Err(Error::buffer_too_small(2, data.len()));
-        }
+        };
 
-        let magic = u16::from_le_bytes([data[0], data[1]]);
+        let magic = u16::from_le_bytes(magic_bytes);
         match magic {
             PE32_MAGIC => Ok(Self::Pe32(OptionalHeader32::parse(data)?)),
             PE32PLUS_MAGIC => Ok(Self::Pe32Plus(OptionalHeader64::parse(data)?)),

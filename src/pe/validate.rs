@@ -69,7 +69,7 @@ impl PeImage {
             ));
         }
 
-        if self.coff_header.number_of_sections as usize != self.sections.len() {
+        if usize::from(self.coff_header.number_of_sections) != self.sections.len() {
             result.push(ValidationIssue::error(
                 ValidationCode::InconsistentSectionCount,
                 format!(
@@ -91,7 +91,7 @@ impl PeImage {
         }
 
         let expected_optional_size = self.optional_header.size();
-        if (self.coff_header.size_of_optional_header as usize) < expected_optional_size {
+        if usize::from(self.coff_header.size_of_optional_header) < expected_optional_size {
             result.push(ValidationIssue::error(
                 ValidationCode::InconsistentOptionalHeader,
                 format!(

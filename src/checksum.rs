@@ -17,27 +17,25 @@ pub fn calculate_checksum(data: &[u8], checksum_offset: usize) -> u32 {
     let mut sum: u32 = 0;
     let len = data.len();
 
-    // Process 16-bit words
-    let mut i = 0;
-    while i + 1 < len {
+    // Process 16-bit words, each paired with its file offset.
+    let skip = checksum_offset..checksum_offset.saturating_add(4);
+    let (words, tail) = data.as_chunks::<2>();
+    for (offset, word) in (0..len).step_by(2).zip(words) {
         // Skip the checksum field (4 bytes at checksum_offset)
-        if i >= checksum_offset && i < checksum_offset.saturating_add(4) {
-            i += 2;
+        if skip.contains(&offset) {
             continue;
         }
-
-        let word = u32::from(u16::from_le_bytes([data[i], data[i + 1]]));
-        sum = fold_carry(sum + word);
-        i += 2;
+        sum = fold_carry(sum + u32::from(u16::from_le_bytes(*word)));
     }
 
     // Handle odd byte at end
-    if i < len {
-        sum = fold_carry(sum + u32::from(data[i]));
+    if let [byte] = tail {
+        sum = fold_carry(sum + u32::from(*byte));
     }
 
-    // Add file size; the algorithm uses only its low 32 bits
-    let size_low = (len as u64 & 0xFFFF_FFFF) as u32;
+    // Add file size; the algorithm uses only its low 32 bits.
+    let [b0, b1, b2, b3, ..] = len.to_le_bytes();
+    let size_low = u32::from_le_bytes([b0, b1, b2, b3]);
     sum.wrapping_add(size_low)
 }
 
@@ -55,14 +53,8 @@ const fn fold_carry(mut sum: u32) -> u32 {
 #[must_use]
 pub fn checksum_field_offset(data: &[u8]) -> Option<usize> {
     // DOS header e_lfanew is at offset 0x3C
-    if data.len() < 0x40 {
-        return None;
-    }
-
-    let pe_offset = usize::try_from(u32::from_le_bytes([
-        data[0x3C], data[0x3D], data[0x3E], data[0x3F],
-    ]))
-    .ok()?;
+    let e_lfanew = data.get(0x3C..)?.first_chunk::<4>()?;
+    let pe_offset = usize::try_from(u32::from_le_bytes(*e_lfanew)).ok()?;
 
     // PE signature (4) + COFF header (20) + checksum is at offset 64 in optional header
     let checksum_offset = pe_offset.checked_add(4 + 20 + 64)?;

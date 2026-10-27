@@ -1,0 +1,412 @@
+//! x64 `UNWIND_INFO` records and their unwind codes.
+
+use super::RuntimeFunction;
+use crate::prelude::*;
+use crate::{Error, Result};
+
+/// Unwind operation codes for x64.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum UnwindOpCode {
+    /// Push a nonvolatile integer register.
+    PushNonVol = 0,
+    /// Allocate a large-sized area on the stack.
+    AllocLarge = 1,
+    /// Allocate a small-sized area on the stack.
+    AllocSmall = 2,
+    /// Establish the frame pointer register.
+    SetFpReg = 3,
+    /// Save a nonvolatile integer register on the stack using MOV.
+    SaveNonVol = 4,
+    /// Save a nonvolatile integer register on the stack with a far offset.
+    SaveNonVolFar = 5,
+    /// Describes the function epilog.
+    Epilog = 6,
+    /// Reserved.
+    SpareCode = 7,
+    /// Save an XMM(128) register on the stack.
+    SaveXmm128 = 8,
+    /// Save an XMM(128) register on the stack with a far offset.
+    SaveXmm128Far = 9,
+    /// Push a machine frame.
+    PushMachFrame = 10,
+}
+
+impl UnwindOpCode {
+    /// Decode a 4-bit `UWOP_*` operation code; `None` if unknown.
+    #[must_use]
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::PushNonVol),
+            1 => Some(Self::AllocLarge),
+            2 => Some(Self::AllocSmall),
+            3 => Some(Self::SetFpReg),
+            4 => Some(Self::SaveNonVol),
+            5 => Some(Self::SaveNonVolFar),
+            6 => Some(Self::Epilog),
+            7 => Some(Self::SpareCode),
+            8 => Some(Self::SaveXmm128),
+            9 => Some(Self::SaveXmm128Far),
+            10 => Some(Self::PushMachFrame),
+            _ => None,
+        }
+    }
+}
+
+/// A single unwind code entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnwindCode {
+    /// Offset in prolog where this operation occurs.
+    pub code_offset: u8,
+    /// Operation code (4 bits) and operation info (4 bits).
+    pub op_and_info: u8,
+}
+
+impl UnwindCode {
+    /// Get the operation code.
+    #[must_use]
+    pub fn op_code(self) -> Option<UnwindOpCode> {
+        UnwindOpCode::from_u8(self.op_and_info & 0x0F)
+    }
+
+    /// Get the operation info (interpretation depends on `op_code`).
+    #[must_use]
+    pub fn op_info(self) -> u8 {
+        self.op_and_info >> 4
+    }
+}
+
+/// No handler (`UNW_FLAG_NHANDLER`).
+pub const UNW_FLAG_NHANDLER: u8 = 0;
+/// Exception handler present (`UNW_FLAG_EHANDLER`).
+pub const UNW_FLAG_EHANDLER: u8 = 1;
+/// Termination handler present (`UNW_FLAG_UHANDLER`).
+pub const UNW_FLAG_UHANDLER: u8 = 2;
+/// Chained to another `RUNTIME_FUNCTION` (`UNW_FLAG_CHAININFO`).
+pub const UNW_FLAG_CHAININFO: u8 = 4;
+
+/// Size of the exception-handler RVA that follows the unwind codes.
+const HANDLER_RVA_SIZE: usize = 4;
+
+/// `UNWIND_INFO` header for x64.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UnwindInfo {
+    /// Version (3 bits) and flags (5 bits).
+    pub version_flags: u8,
+    /// Size of the prolog in bytes.
+    pub size_of_prolog: u8,
+    /// Number of unwind codes.
+    pub count_of_codes: u8,
+    /// Frame register (4 bits) and frame register offset (4 bits).
+    pub frame_reg_and_offset: u8,
+    /// Array of unwind codes.
+    pub unwind_codes: Vec<UnwindCode>,
+    /// Exception handler RVA (if `UNW_FLAG_EHANDLER` or `UNW_FLAG_UHANDLER`).
+    pub exception_handler: Option<u32>,
+    /// Chained unwind info RVA (if `UNW_FLAG_CHAININFO`).
+    pub chained_info: Option<u32>,
+    /// Complete chained runtime-function entry (if `UNW_FLAG_CHAININFO`).
+    pub chained_function: Option<RuntimeFunction>,
+    /// Language-specific bytes following an exception-handler RVA.
+    pub handler_data: Vec<u8>,
+}
+
+impl UnwindInfo {
+    /// Minimum size: `version_flags` + `size_of_prolog` + `count_of_codes` + `frame_reg_and_offset`.
+    pub const MIN_SIZE: usize = 4;
+
+    /// Get the version (bits 0-2).
+    #[must_use]
+    pub fn version(&self) -> u8 {
+        self.version_flags & 0x07
+    }
+
+    /// Get the flags (bits 3-7).
+    #[must_use]
+    pub fn flags(&self) -> u8 {
+        self.version_flags >> 3
+    }
+
+    /// Check if this has an exception handler.
+    #[must_use]
+    pub fn has_exception_handler(&self) -> bool {
+        let flags = self.flags();
+        (flags & UNW_FLAG_EHANDLER) != 0 || (flags & UNW_FLAG_UHANDLER) != 0
+    }
+
+    /// Check if this is chained to another unwind info.
+    #[must_use]
+    pub fn is_chained(&self) -> bool {
+        (self.flags() & UNW_FLAG_CHAININFO) != 0
+    }
+
+    /// Get the frame register (0 = no frame register).
+    #[must_use]
+    pub fn frame_register(&self) -> u8 {
+        self.frame_reg_and_offset & 0x0F
+    }
+
+    /// Get the frame register offset (scaled by 16).
+    #[must_use]
+    pub fn frame_offset(&self) -> u8 {
+        self.frame_reg_and_offset >> 4
+    }
+
+    /// Parse from bytes at an RVA.
+    ///
+    /// # Errors
+    /// Returns an error if the buffer is too short for the header, unwind
+    /// codes, or trailing handler/chain data, or if the version/flags are
+    /// unsupported or inconsistent.
+    pub fn parse(data: &[u8]) -> Result<Self> {
+        let Some((header, after_header)) = data.split_first_chunk::<{ Self::MIN_SIZE }>() else {
+            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
+        };
+        let [
+            version_flags,
+            size_of_prolog,
+            count_of_codes,
+            frame_reg_and_offset,
+        ] = *header;
+
+        Self::validate_header(version_flags)?;
+
+        // Each unwind code has 2 bytes. A `u8` count gives at most 510 bytes, and the slot
+        // array is padded to a multiple of 4 bytes.
+        let codes_size = usize::from(count_of_codes) * 2;
+        let aligned_codes_size = (codes_size + 3) & !3;
+        let Some(codes) = after_header.get(..codes_size) else {
+            return Err(Error::buffer_too_small(
+                Self::MIN_SIZE + codes_size,
+                data.len(),
+            ));
+        };
+        let (code_pairs, _) = codes.as_chunks::<2>();
+        let unwind_codes = code_pairs
+            .iter()
+            .map(|&[code_offset, op_and_info]| UnwindCode {
+                code_offset,
+                op_and_info,
+            })
+            .collect();
+
+        // The handler or chain data starts after the padded unwind codes.
+        let trailer_offset = Self::MIN_SIZE + aligned_codes_size;
+        let trailer = data.get(trailer_offset..).unwrap_or_default();
+        let flags = version_flags >> 3;
+
+        let mut exception_handler = None;
+        let mut chained_info = None;
+        let mut chained_function = None;
+        let mut handler_data = Vec::new();
+
+        if (flags & UNW_FLAG_CHAININFO) != 0 {
+            if trailer.len() < RuntimeFunction::SIZE {
+                return Err(Error::buffer_too_small(
+                    trailer_offset + RuntimeFunction::SIZE,
+                    data.len(),
+                ));
+            }
+            let function = RuntimeFunction::parse(trailer)?;
+            chained_info = Some(function.begin_address);
+            chained_function = Some(function);
+        } else if (flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER)) != 0 {
+            let Some((handler, language_data)) = trailer.split_first_chunk::<HANDLER_RVA_SIZE>()
+            else {
+                return Err(Error::buffer_too_small(
+                    trailer_offset + HANDLER_RVA_SIZE,
+                    data.len(),
+                ));
+            };
+            exception_handler = Some(u32::from_le_bytes(*handler));
+            handler_data.extend_from_slice(language_data);
+        }
+
+        let info = Self {
+            version_flags,
+            size_of_prolog,
+            count_of_codes,
+            frame_reg_and_offset,
+            unwind_codes,
+            exception_handler,
+            chained_info,
+            chained_function,
+            handler_data,
+        };
+        info.validate()?;
+        Ok(info)
+    }
+
+    /// Serialize to bytes.
+    ///
+    /// # Panics
+    /// Panics if [`Self::try_to_bytes`] fails.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.try_to_bytes()
+            .expect("unwind-info build failed: use try_to_bytes()")
+    }
+
+    /// Serialize a complete, internally consistent x64 unwind record.
+    ///
+    /// # Errors
+    /// Returns an error if [`Self::validate`] fails.
+    pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
+        self.try_to_bytes_with_handler_data(&self.handler_data)
+    }
+
+    /// Serialize with a borrowed replacement language payload.
+    ///
+    /// The record must remain internally consistent, and nonempty payloads
+    /// require an exception handler. This avoids an intermediate owned copy
+    /// when a caller emits several records using the same language metadata.
+    ///
+    /// # Errors
+    /// Returns an error if [`Self::validate`] fails, if `handler_data` is
+    /// nonempty without a handler, or if size computations overflow.
+    pub fn try_to_bytes_with_handler_data(&self, handler_data: &[u8]) -> Result<Vec<u8>> {
+        self.validate()?;
+        if !handler_data.is_empty() && self.exception_handler.is_none() {
+            return Err(Error::invalid_data_directory(
+                "borrowed exception-handler data present without a handler",
+            ));
+        }
+        let count_of_codes = u8::try_from(self.unwind_codes.len())
+            .map_err(|_| Error::invalid_data_directory("more than 255 unwind-code slots"))?;
+        // A `u8` count gives at most 510 bytes of unwind codes. This sum cannot overflow.
+        let codes_end = Self::MIN_SIZE + ((usize::from(count_of_codes) * 2 + 3) & !3);
+        let chained_size = self.chained_function.map_or(0, |_| RuntimeFunction::SIZE);
+        let handler_size = self
+            .exception_handler
+            .map(|_| {
+                HANDLER_RVA_SIZE
+                    .checked_add(handler_data.len())
+                    .ok_or_else(|| Error::invalid_data_directory("unwind handler size overflow"))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let total_size = codes_end
+            .checked_add(chained_size.max(handler_size))
+            .ok_or_else(|| Error::invalid_data_directory("unwind-info size overflow"))?;
+
+        let mut buf = Vec::with_capacity(total_size);
+        buf.extend_from_slice(&[
+            self.version_flags,
+            self.size_of_prolog,
+            count_of_codes,
+            self.frame_reg_and_offset,
+        ]);
+        for code in &self.unwind_codes {
+            buf.extend_from_slice(&[code.code_offset, code.op_and_info]);
+        }
+        // Pad the unwind-code array to a multiple of 4 bytes.
+        buf.resize(codes_end, 0);
+
+        if let Some(chained) = self.chained_function {
+            buf.extend_from_slice(&chained.to_bytes());
+        } else if let Some(handler) = self.exception_handler {
+            buf.extend_from_slice(&handler.to_le_bytes());
+            buf.extend_from_slice(handler_data);
+        }
+
+        Ok(buf)
+    }
+
+    /// Check the flag combination and associated trailing payload.
+    ///
+    /// # Errors
+    /// Returns an error for an unsupported version or flags, more than 255
+    /// unwind codes, or handler/chain data inconsistent with the flags.
+    pub fn validate(&self) -> Result<()> {
+        Self::validate_header(self.version_flags)?;
+        if self.unwind_codes.len() > usize::from(u8::MAX) {
+            return Err(Error::invalid_data_directory(
+                "more than 255 unwind-code slots",
+            ));
+        }
+
+        let chained = self.is_chained();
+        let handled = self.has_exception_handler();
+        if chained {
+            if self.chained_function.is_none() {
+                return Err(Error::invalid_data_directory(
+                    "UNW_FLAG_CHAININFO requires a complete RUNTIME_FUNCTION record",
+                ));
+            }
+            if self.exception_handler.is_some() || !self.handler_data.is_empty() {
+                return Err(Error::invalid_data_directory(
+                    "chained unwind info cannot contain exception-handler data",
+                ));
+            }
+        } else if self.chained_function.is_some() || self.chained_info.is_some() {
+            return Err(Error::invalid_data_directory(
+                "chained runtime function present without UNW_FLAG_CHAININFO",
+            ));
+        }
+
+        if handled {
+            if self.exception_handler.is_none() {
+                return Err(Error::invalid_data_directory(
+                    "unwind handler flag requires an exception-handler RVA",
+                ));
+            }
+        } else if self.exception_handler.is_some() || !self.handler_data.is_empty() {
+            return Err(Error::invalid_data_directory(
+                "exception-handler data present without a handler flag",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_header(version_flags: u8) -> Result<()> {
+        let version = version_flags & 0x07;
+        if !(1..=2).contains(&version) {
+            return Err(Error::invalid_data_directory(format!(
+                "unsupported x64 unwind version {version}"
+            )));
+        }
+        let flags = version_flags >> 3;
+        let supported = UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER | UNW_FLAG_CHAININFO;
+        if flags & !supported != 0 {
+            return Err(Error::invalid_data_directory(format!(
+                "unsupported x64 unwind flags {flags:#x}"
+            )));
+        }
+        if flags & UNW_FLAG_CHAININFO != 0 && flags & (UNW_FLAG_EHANDLER | UNW_FLAG_UHANDLER) != 0 {
+            return Err(Error::invalid_data_directory(
+                "UNW_FLAG_CHAININFO cannot be combined with handler flags",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_handler_payload_is_serialized_without_owned_replacement() {
+        let info = UnwindInfo {
+            version_flags: 1 | (UNW_FLAG_EHANDLER << 3),
+            exception_handler: Some(0x3000),
+            handler_data: vec![0xaa],
+            ..UnwindInfo::default()
+        };
+        let bytes = info
+            .try_to_bytes_with_handler_data(&[0x11, 0x22, 0x33])
+            .expect("borrowed language metadata is valid");
+        assert_eq!(&bytes[4..8], &0x3000_u32.to_le_bytes());
+        assert_eq!(&bytes[8..], &[0x11, 0x22, 0x33]);
+        assert_eq!(info.handler_data, [0xaa]);
+        assert_eq!(
+            &info.try_to_bytes().expect("owned metadata remains valid")[8..],
+            &[0xaa]
+        );
+        let unhandled = UnwindInfo {
+            version_flags: 1,
+            ..UnwindInfo::default()
+        };
+        assert!(unhandled.try_to_bytes_with_handler_data(&[1]).is_err());
+    }
+}

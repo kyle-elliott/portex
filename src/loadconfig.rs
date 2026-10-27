@@ -10,35 +10,84 @@ use crate::{Error, Result};
 /// retains the legacy directory-size convention, not an absent directory.
 fn directory_prefix(data: &[u8]) -> Result<(u32, &[u8])> {
     const HEADER_SIZE: usize = core::mem::size_of::<u32>();
-    if data.len() < HEADER_SIZE {
+    let Some(size_bytes) = data.first_chunk::<HEADER_SIZE>() else {
         return Err(Error::buffer_too_small(HEADER_SIZE, data.len()));
-    }
-    let size = u32::from_le_bytes(
-        data[..HEADER_SIZE]
-            .try_into()
-            .expect("the Size field is present"),
-    );
-    let declared_size = if size == 0 { data.len() } else { size as usize };
-    if declared_size < HEADER_SIZE || declared_size > data.len() {
-        return Err(Error::invalid_data_directory(format!(
+    };
+    let size = u32::from_le_bytes(*size_bytes);
+    // A Size that does not fit `usize` is also larger than `data`.
+    let declared_size = if size == 0 {
+        data.len()
+    } else {
+        usize::try_from(size).unwrap_or(usize::MAX)
+    };
+    match data.get(..declared_size) {
+        Some(prefix) if declared_size >= HEADER_SIZE => Ok((size, prefix)),
+        _ => Err(Error::invalid_data_directory(format!(
             "load-config size {declared_size} is outside the available {} bytes",
             data.len()
-        )));
+        ))),
     }
-    Ok((size, &data[..declared_size]))
 }
 
 /// A version may omit a whole field, but never supply only part of its value.
 fn directory_field<const N: usize>(data: &[u8], offset: usize) -> Result<[u8; N]> {
-    if offset >= data.len() {
-        return Ok([0; N]);
+    match data.get(offset..) {
+        None | Some([]) => Ok([0; N]),
+        Some(rest) => rest.first_chunk::<N>().copied().ok_or_else(|| {
+            Error::invalid_data_directory(format!("load-config field at {offset:#x} is truncated"))
+        }),
     }
-    let bytes = data.get(offset..offset + N).ok_or_else(|| {
-        Error::invalid_data_directory(format!("load-config field at {offset:#x} is truncated"))
-    })?;
-    Ok(bytes
-        .try_into()
-        .expect("the complete field has its declared width"))
+}
+
+/// Writes `bytes` at `offset` in `buf` if the complete field fits.
+///
+/// A shorter record omits the whole field. In this case, the function writes nothing.
+fn write_field(buf: &mut [u8], offset: usize, bytes: &[u8]) {
+    if let Some(field) = buf
+        .get_mut(offset..)
+        .and_then(|rest| rest.get_mut(..bytes.len()))
+    {
+        field.copy_from_slice(bytes);
+    }
+}
+
+/// Makes the zeroed output buffer for a serialized load configuration.
+///
+/// The buffer length is the largest of these values:
+///
+/// - `size`, the `Size` field that the caller set.
+/// - `known_size`, the end of the last field that is not zero.
+/// - The end of `trailing`, which starts at `trailing_start`.
+///
+/// The function copies `trailing` into the buffer. It returns the buffer and its length as `u32`.
+fn output_buffer(
+    size: u32,
+    known_size: usize,
+    trailing_start: usize,
+    trailing: &[u8],
+) -> Result<(Vec<u8>, u32)> {
+    let trailing_end = if trailing.is_empty() {
+        0
+    } else {
+        trailing_start
+            .checked_add(trailing.len())
+            .ok_or_else(|| Error::invalid_data_directory("load-config size overflow"))?
+    };
+    let declared_size = usize::try_from(size)
+        .map_err(|_| Error::invalid_data_directory("load-config size exceeds usize"))?;
+    let output_size = declared_size.max(known_size).max(trailing_end);
+    let encoded_size = u32::try_from(output_size)
+        .map_err(|_| Error::invalid_data_directory("load-config size exceeds u32"))?;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(output_size)
+        .map_err(|_| Error::invalid_data_directory("load-config is too large to allocate"))?;
+    buf.resize(output_size, 0);
+    if let Some(tail) = buf.get_mut(trailing_start..) {
+        for (dst, src) in tail.iter_mut().zip(trailing) {
+            *dst = *src;
+        }
+    }
+    Ok((buf, encoded_size))
 }
 
 /// `IMAGE_LOAD_CONFIG_DIRECTORY32` (Windows 10+) - 192 bytes
@@ -150,7 +199,8 @@ impl LoadConfigDirectory32 {
     ///
     /// # Panics
     ///
-    /// Panics if the serialized size exceeds `u32`; use [`Self::try_to_bytes`].
+    /// Panics if the serialized size exceeds `u32` or the allocation fails; use
+    /// [`Self::try_to_bytes`].
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
@@ -161,7 +211,8 @@ impl LoadConfigDirectory32 {
     ///
     /// # Errors
     ///
-    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32`.
+    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32`
+    /// or the allocation fails.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         let known_size = if self.guard_flags != 0 {
             Self::SIZE_WITH_CFG
@@ -178,67 +229,40 @@ impl LoadConfigDirectory32 {
         } else {
             Self::MIN_SIZE
         };
-        let trailing_size = if self.trailing_data.is_empty() {
-            0
-        } else {
-            Self::SIZE_WITH_CFG
-                .checked_add(self.trailing_data.len())
-                .ok_or_else(|| Error::invalid_data_directory("load-config size overflow"))?
-        };
-        let output_size = (self.size as usize).max(known_size).max(trailing_size);
-        let encoded_size = u32::try_from(output_size)
-            .map_err(|_| Error::invalid_data_directory("load-config size exceeds u32"))?;
-        let mut buf = vec![0u8; output_size];
-
-        buf[0..4].copy_from_slice(&encoded_size.to_le_bytes());
-        buf[4..8].copy_from_slice(&self.time_date_stamp.to_le_bytes());
-        buf[8..10].copy_from_slice(&self.major_version.to_le_bytes());
-        buf[10..12].copy_from_slice(&self.minor_version.to_le_bytes());
-        buf[12..16].copy_from_slice(&self.global_flags_clear.to_le_bytes());
-        buf[16..20].copy_from_slice(&self.global_flags_set.to_le_bytes());
-        buf[20..24].copy_from_slice(&self.critical_section_default_timeout.to_le_bytes());
-        buf[24..28].copy_from_slice(&self.de_commit_free_block_threshold.to_le_bytes());
-        buf[28..32].copy_from_slice(&self.de_commit_total_free_threshold.to_le_bytes());
-        buf[32..36].copy_from_slice(&self.lock_prefix_table.to_le_bytes());
-        buf[36..40].copy_from_slice(&self.maximum_allocation_size.to_le_bytes());
-        buf[40..44].copy_from_slice(&self.virtual_memory_threshold.to_le_bytes());
-        buf[44..48].copy_from_slice(&self.process_heap_flags.to_le_bytes());
-        buf[48..52].copy_from_slice(&self.process_affinity_mask.to_le_bytes());
-        buf[52..54].copy_from_slice(&self.csd_version.to_le_bytes());
-        buf[54..56].copy_from_slice(&self.dependent_load_flags.to_le_bytes());
-        buf[56..60].copy_from_slice(&self.edit_list.to_le_bytes());
-        buf[60..64].copy_from_slice(&self.security_cookie.to_le_bytes());
-
-        if output_size >= 72 {
-            buf[64..68].copy_from_slice(&self.se_handler_table.to_le_bytes());
-            buf[68..72].copy_from_slice(&self.se_handler_count.to_le_bytes());
-        }
-
-        if output_size >= 76 {
-            buf[72..76].copy_from_slice(&self.guard_cf_check_function_pointer.to_le_bytes());
-        }
-        if output_size >= 80 {
-            buf[76..80].copy_from_slice(&self.guard_cf_dispatch_function_pointer.to_le_bytes());
-        }
-        if output_size >= 84 {
-            buf[80..84].copy_from_slice(&self.guard_cf_function_table.to_le_bytes());
-        }
-        if output_size >= 88 {
-            buf[84..88].copy_from_slice(&self.guard_cf_function_count.to_le_bytes());
-        }
-        if output_size >= Self::SIZE_WITH_CFG {
-            buf[88..92].copy_from_slice(&self.guard_flags.to_le_bytes());
-        }
-
-        if output_size > Self::SIZE_WITH_CFG && !self.trailing_data.is_empty() {
-            let count = self
-                .trailing_data
-                .len()
-                .min(output_size - Self::SIZE_WITH_CFG);
-            buf[Self::SIZE_WITH_CFG..Self::SIZE_WITH_CFG + count]
-                .copy_from_slice(&self.trailing_data[..count]);
-        }
-
+        let (mut buf, encoded_size) = output_buffer(
+            self.size,
+            known_size,
+            Self::SIZE_WITH_CFG,
+            &self.trailing_data,
+        )?;
+        // The buffer holds at least `MIN_SIZE` bytes. A later field is written
+        // only if the buffer holds the complete field.
+        let mut put = |offset, bytes: &[u8]| write_field(&mut buf, offset, bytes);
+        put(0, &encoded_size.to_le_bytes());
+        put(4, &self.time_date_stamp.to_le_bytes());
+        put(8, &self.major_version.to_le_bytes());
+        put(10, &self.minor_version.to_le_bytes());
+        put(12, &self.global_flags_clear.to_le_bytes());
+        put(16, &self.global_flags_set.to_le_bytes());
+        put(20, &self.critical_section_default_timeout.to_le_bytes());
+        put(24, &self.de_commit_free_block_threshold.to_le_bytes());
+        put(28, &self.de_commit_total_free_threshold.to_le_bytes());
+        put(32, &self.lock_prefix_table.to_le_bytes());
+        put(36, &self.maximum_allocation_size.to_le_bytes());
+        put(40, &self.virtual_memory_threshold.to_le_bytes());
+        put(44, &self.process_heap_flags.to_le_bytes());
+        put(48, &self.process_affinity_mask.to_le_bytes());
+        put(52, &self.csd_version.to_le_bytes());
+        put(54, &self.dependent_load_flags.to_le_bytes());
+        put(56, &self.edit_list.to_le_bytes());
+        put(60, &self.security_cookie.to_le_bytes());
+        put(64, &self.se_handler_table.to_le_bytes());
+        put(68, &self.se_handler_count.to_le_bytes());
+        put(72, &self.guard_cf_check_function_pointer.to_le_bytes());
+        put(76, &self.guard_cf_dispatch_function_pointer.to_le_bytes());
+        put(80, &self.guard_cf_function_table.to_le_bytes());
+        put(84, &self.guard_cf_function_count.to_le_bytes());
+        put(88, &self.guard_flags.to_le_bytes());
         Ok(buf)
     }
 
@@ -364,7 +388,8 @@ impl LoadConfigDirectory64 {
     ///
     /// # Panics
     ///
-    /// Panics if the serialized size exceeds `u32`; use [`Self::try_to_bytes`].
+    /// Panics if the serialized size exceeds `u32` or the allocation fails; use
+    /// [`Self::try_to_bytes`].
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
@@ -375,7 +400,8 @@ impl LoadConfigDirectory64 {
     ///
     /// # Errors
     ///
-    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32`.
+    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32`
+    /// or the allocation fails.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         let known_size = if self.guard_flags != 0 {
             Self::SIZE_WITH_CFG
@@ -390,64 +416,40 @@ impl LoadConfigDirectory64 {
         } else {
             Self::MIN_SIZE
         };
-        let trailing_size = if self.trailing_data.is_empty() {
-            0
-        } else {
-            Self::SIZE_WITH_CFG
-                .checked_add(self.trailing_data.len())
-                .ok_or_else(|| Error::invalid_data_directory("load-config size overflow"))?
-        };
-        let output_size = (self.size as usize).max(known_size).max(trailing_size);
-        let encoded_size = u32::try_from(output_size)
-            .map_err(|_| Error::invalid_data_directory("load-config size exceeds u32"))?;
-        let mut buf = vec![0u8; output_size];
-
-        buf[0..4].copy_from_slice(&encoded_size.to_le_bytes());
-        buf[4..8].copy_from_slice(&self.time_date_stamp.to_le_bytes());
-        buf[8..10].copy_from_slice(&self.major_version.to_le_bytes());
-        buf[10..12].copy_from_slice(&self.minor_version.to_le_bytes());
-        buf[12..16].copy_from_slice(&self.global_flags_clear.to_le_bytes());
-        buf[16..20].copy_from_slice(&self.global_flags_set.to_le_bytes());
-        buf[20..24].copy_from_slice(&self.critical_section_default_timeout.to_le_bytes());
-        buf[24..32].copy_from_slice(&self.de_commit_free_block_threshold.to_le_bytes());
-        buf[32..40].copy_from_slice(&self.de_commit_total_free_threshold.to_le_bytes());
-        buf[40..48].copy_from_slice(&self.lock_prefix_table.to_le_bytes());
-        buf[48..56].copy_from_slice(&self.maximum_allocation_size.to_le_bytes());
-        buf[56..64].copy_from_slice(&self.virtual_memory_threshold.to_le_bytes());
-        buf[64..72].copy_from_slice(&self.process_affinity_mask.to_le_bytes());
-        buf[72..76].copy_from_slice(&self.process_heap_flags.to_le_bytes());
-        buf[76..78].copy_from_slice(&self.csd_version.to_le_bytes());
-        buf[78..80].copy_from_slice(&self.dependent_load_flags.to_le_bytes());
-        buf[80..88].copy_from_slice(&self.edit_list.to_le_bytes());
-        buf[88..96].copy_from_slice(&self.security_cookie.to_le_bytes());
-        buf[96..104].copy_from_slice(&self.se_handler_table.to_le_bytes());
-        buf[104..112].copy_from_slice(&self.se_handler_count.to_le_bytes());
-
-        if output_size >= 120 {
-            buf[112..120].copy_from_slice(&self.guard_cf_check_function_pointer.to_le_bytes());
-        }
-        if output_size >= 128 {
-            buf[120..128].copy_from_slice(&self.guard_cf_dispatch_function_pointer.to_le_bytes());
-        }
-        if output_size >= 136 {
-            buf[128..136].copy_from_slice(&self.guard_cf_function_table.to_le_bytes());
-        }
-        if output_size >= 144 {
-            buf[136..144].copy_from_slice(&self.guard_cf_function_count.to_le_bytes());
-        }
-        if output_size >= Self::SIZE_WITH_CFG {
-            buf[144..148].copy_from_slice(&self.guard_flags.to_le_bytes());
-        }
-
-        if output_size > Self::SIZE_WITH_CFG && !self.trailing_data.is_empty() {
-            let count = self
-                .trailing_data
-                .len()
-                .min(output_size - Self::SIZE_WITH_CFG);
-            buf[Self::SIZE_WITH_CFG..Self::SIZE_WITH_CFG + count]
-                .copy_from_slice(&self.trailing_data[..count]);
-        }
-
+        let (mut buf, encoded_size) = output_buffer(
+            self.size,
+            known_size,
+            Self::SIZE_WITH_CFG,
+            &self.trailing_data,
+        )?;
+        // The buffer holds at least `MIN_SIZE` bytes. A later field is written
+        // only if the buffer holds the complete field.
+        let mut put = |offset, bytes: &[u8]| write_field(&mut buf, offset, bytes);
+        put(0, &encoded_size.to_le_bytes());
+        put(4, &self.time_date_stamp.to_le_bytes());
+        put(8, &self.major_version.to_le_bytes());
+        put(10, &self.minor_version.to_le_bytes());
+        put(12, &self.global_flags_clear.to_le_bytes());
+        put(16, &self.global_flags_set.to_le_bytes());
+        put(20, &self.critical_section_default_timeout.to_le_bytes());
+        put(24, &self.de_commit_free_block_threshold.to_le_bytes());
+        put(32, &self.de_commit_total_free_threshold.to_le_bytes());
+        put(40, &self.lock_prefix_table.to_le_bytes());
+        put(48, &self.maximum_allocation_size.to_le_bytes());
+        put(56, &self.virtual_memory_threshold.to_le_bytes());
+        put(64, &self.process_affinity_mask.to_le_bytes());
+        put(72, &self.process_heap_flags.to_le_bytes());
+        put(76, &self.csd_version.to_le_bytes());
+        put(78, &self.dependent_load_flags.to_le_bytes());
+        put(80, &self.edit_list.to_le_bytes());
+        put(88, &self.security_cookie.to_le_bytes());
+        put(96, &self.se_handler_table.to_le_bytes());
+        put(104, &self.se_handler_count.to_le_bytes());
+        put(112, &self.guard_cf_check_function_pointer.to_le_bytes());
+        put(120, &self.guard_cf_dispatch_function_pointer.to_le_bytes());
+        put(128, &self.guard_cf_function_table.to_le_bytes());
+        put(136, &self.guard_cf_function_count.to_le_bytes());
+        put(144, &self.guard_flags.to_le_bytes());
         Ok(buf)
     }
 
@@ -487,7 +489,8 @@ impl LoadConfigDirectory {
     ///
     /// # Panics
     ///
-    /// Panics if the serialized size exceeds `u32`; use [`Self::try_to_bytes`].
+    /// Panics if the serialized size exceeds `u32` or the allocation fails; use
+    /// [`Self::try_to_bytes`].
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
@@ -498,7 +501,8 @@ impl LoadConfigDirectory {
     ///
     /// # Errors
     ///
-    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32`.
+    /// Returns an `InvalidDataDirectory` error if the serialized size exceeds `u32`
+    /// or the allocation fails.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         match self {
             Self::Config32(c) => c.try_to_bytes(),
@@ -649,8 +653,9 @@ impl LoadConfigBuilder {
     ///
     /// # Panics
     ///
-    /// Panics if the directory bitness does not match the builder or its size
-    /// exceeds `u32`; use [`Self::try_build`] for fallible building.
+    /// Panics if the directory bitness does not match the builder, its size
+    /// exceeds `u32` or the allocation fails; use [`Self::try_build`] for
+    /// fallible building.
     #[must_use]
     pub fn build(&self, config: &LoadConfigDirectory) -> (Vec<u8>, u32) {
         self.try_build(config)
@@ -662,7 +667,8 @@ impl LoadConfigBuilder {
     /// # Errors
     ///
     /// Returns an `InvalidDataDirectory` error if the directory bitness does not
-    /// match the builder or the serialized size exceeds `u32`.
+    /// match the builder, the serialized size exceeds `u32` or the allocation
+    /// fails.
     pub fn try_build(&self, config: &LoadConfigDirectory) -> Result<(Vec<u8>, u32)> {
         let matches_width = matches!(
             (self.is_64bit, config),
@@ -891,5 +897,57 @@ mod tests {
         }
         assert!(LoadConfigDirectory32::parse(&[]).is_err());
         assert!(LoadConfigDirectory64::parse(&[0; 3]).is_err());
+    }
+
+    #[test]
+    fn serialization_keeps_trailing_data_and_declared_size() {
+        let config32 = LoadConfigDirectory32 {
+            size: 70,
+            security_cookie: 0x0040_1000,
+            trailing_data: vec![0xAA, 0xBB],
+            ..Default::default()
+        };
+        let bytes32 = config32.try_to_bytes().expect("a small PE32 record");
+        assert_eq!(bytes32.len(), LoadConfigDirectory32::SIZE_WITH_CFG + 2);
+        assert_eq!(bytes32[92..], [0xAA, 0xBB]);
+        let parsed32 = LoadConfigDirectory32::parse(&bytes32).expect("serialized PE32 record");
+        assert_eq!(parsed32.trailing_data, config32.trailing_data);
+        assert_eq!(parsed32.security_cookie, config32.security_cookie);
+
+        let config64 = LoadConfigDirectory64 {
+            size: 200,
+            guard_flags: guard_flags::CF_INSTRUMENTED,
+            trailing_data: vec![0xCC],
+            ..Default::default()
+        };
+        let bytes64 = config64.try_to_bytes().expect("a small PE32+ record");
+        assert_eq!(bytes64.len(), 200);
+        assert_eq!(bytes64[148], 0xCC);
+        assert!(bytes64[149..].iter().all(|&byte| byte == 0));
+        let parsed64 = LoadConfigDirectory64::parse(&bytes64).expect("serialized PE32+ record");
+        assert_eq!(parsed64.guard_flags, config64.guard_flags);
+        assert_eq!(parsed64.size, 200);
+    }
+
+    /// On a 32-bit target, a `Size` of `u32::MAX` exceeds `isize::MAX`, so
+    /// `vec!` panicked with a capacity overflow before the fix.
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn serialization_reports_unallocatable_size() {
+        let config32 = LoadConfigDirectory32 {
+            size: u32::MAX,
+            ..Default::default()
+        };
+        assert!(config32.try_to_bytes().is_err());
+        let config64 = LoadConfigDirectory64 {
+            size: u32::MAX,
+            ..Default::default()
+        };
+        assert!(config64.try_to_bytes().is_err());
+        assert!(
+            LoadConfigBuilder::new(false)
+                .try_build(&LoadConfigDirectory::Config32(config32))
+                .is_err()
+        );
     }
 }

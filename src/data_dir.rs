@@ -125,14 +125,20 @@ impl DataDirectory {
     ///
     /// Returns a buffer-too-small error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::SIZE {
-            return Err(Error::buffer_too_small(Self::SIZE, data.len()));
-        }
+        let bytes = data
+            .first_chunk::<{ Self::SIZE }>()
+            .ok_or_else(|| Error::buffer_too_small(Self::SIZE, data.len()))?;
+        Ok(Self::from_bytes(*bytes))
+    }
 
-        Ok(Self {
-            virtual_address: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            size: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
-        })
+    /// Decode a data directory from its 8-byte on-disk layout.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; Self::SIZE]) -> Self {
+        let [a0, a1, a2, a3, s0, s1, s2, s3] = bytes;
+        Self {
+            virtual_address: u32::from_le_bytes([a0, a1, a2, a3]),
+            size: u32::from_le_bytes([s0, s1, s2, s3]),
+        }
     }
 
     /// Write the data directory to a byte buffer.

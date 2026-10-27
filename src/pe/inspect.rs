@@ -462,7 +462,7 @@ impl PeImage {
             OptionalHeader::Pe32(_) => crate::optional::OptionalHeader32::BASE_SIZE,
             OptionalHeader::Pe32Plus(_) => crate::optional::OptionalHeader64::BASE_SIZE,
         };
-        let max_count = (u16::MAX as usize - base_size) / crate::data_dir::DataDirectory::SIZE;
+        let max_count = (usize::from(u16::MAX) - base_size) / crate::data_dir::DataDirectory::SIZE;
         if index >= max_count {
             return Err(Error::invalid_data_directory(format!(
                 "directory index {index} cannot fit in a PE optional header"

@@ -81,13 +81,11 @@ impl LayoutConfig {
 }
 
 /// Calculate the size of all headers (DOS + PE sig + COFF + Optional + Section table).
+///
+/// Returns `None` if the size overflows `usize`.
 #[must_use]
-pub fn headers_size(num_sections: usize, optional_header_size: usize) -> usize {
-    DosHeader::SIZE              // DOS header
-        + 4                      // PE signature
-        + CoffHeader::SIZE       // COFF header
-        + optional_header_size   // Optional header
-        + num_sections * SectionHeader::SIZE // Section table
+pub fn headers_size(num_sections: usize, optional_header_size: usize) -> Option<usize> {
+    headers_size_at(DosHeader::SIZE, num_sections, optional_header_size)
 }
 
 /// Calculate the end of the PE headers for a PE signature at `pe_offset`.
@@ -300,5 +298,15 @@ mod tests {
         assert_eq!(align_down(0x1FF, 0x200), 0);
         assert_eq!(align_down(0x200, 0x200), 0x200);
         assert_eq!(align_down(0x3FF, 0x200), 0x200);
+    }
+
+    #[test]
+    fn headers_size_reports_overflow() {
+        assert_eq!(
+            headers_size(1, 0xE0),
+            Some(DosHeader::SIZE + 4 + CoffHeader::SIZE + 0xE0 + SectionHeader::SIZE)
+        );
+        assert_eq!(headers_size(usize::MAX, 0), None);
+        assert_eq!(headers_size(0, usize::MAX), None);
     }
 }

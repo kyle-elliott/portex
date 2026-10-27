@@ -49,7 +49,7 @@ impl PeHeaders {
             .ok_or_else(|| Error::invalid_section("COFF header offset overflow"))?;
         let coff_header = CoffHeader::read_from(reader, coff_offset)?;
 
-        let section_count = coff_header.number_of_sections as usize;
+        let section_count = usize::from(coff_header.number_of_sections);
         if section_count > MAX_NUMBER_OF_SECTIONS {
             return Err(Error::invalid_section(format!(
                 "section count {section_count} exceeds the PE image limit of {MAX_NUMBER_OF_SECTIONS}"
@@ -63,7 +63,7 @@ impl PeHeaders {
         let optional_header = OptionalHeader::read_sized_from(
             reader,
             optional_offset,
-            coff_header.size_of_optional_header as usize,
+            usize::from(coff_header.size_of_optional_header),
         )?;
 
         // Parse section headers

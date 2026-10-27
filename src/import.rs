@@ -55,6 +55,10 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
+mod cursor;
+
+pub(crate) use cursor::Cursor;
+
 use crate::prelude::*;
 use crate::{Error, Result};
 
@@ -107,9 +111,9 @@ impl ImportDescriptor {
     ///
     /// Returns `ErrorKind::BufferTooSmall` if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::SIZE {
+        let Some(data) = data.first_chunk::<{ Self::SIZE }>() else {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
-        }
+        };
 
         Ok(Self {
             original_first_thunk: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
@@ -126,28 +130,29 @@ impl ImportDescriptor {
     ///
     /// Returns `ErrorKind::BufferTooSmall` if `buf` is shorter than [`Self::SIZE`].
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
-        let Some(buf) = buf.get_mut(..Self::SIZE) else {
-            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
+        let len = buf.len();
+        let Some(buf) = buf.first_chunk_mut::<{ Self::SIZE }>() else {
+            return Err(Error::buffer_too_small(Self::SIZE, len));
         };
-        self.write_fields(buf);
+        *buf = self.to_array();
         Ok(())
     }
 
     /// Serialize to bytes.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; Self::SIZE];
-        self.write_fields(&mut buf);
-        buf
+        self.to_array().to_vec()
     }
 
-    /// Write the fields into a buffer of exactly [`Self::SIZE`] bytes.
-    fn write_fields(&self, buf: &mut [u8]) {
+    /// Return the fields as the on-disk structure.
+    fn to_array(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
         buf[0..4].copy_from_slice(&self.original_first_thunk.to_le_bytes());
         buf[4..8].copy_from_slice(&self.time_date_stamp.to_le_bytes());
         buf[8..12].copy_from_slice(&self.forwarder_chain.to_le_bytes());
         buf[12..16].copy_from_slice(&self.name_rva.to_le_bytes());
         buf[16..20].copy_from_slice(&self.first_thunk.to_le_bytes());
+        buf
     }
 }
 
@@ -182,13 +187,15 @@ impl ImportThunk {
     /// Get ordinal from 32-bit thunk entry.
     #[must_use]
     pub fn ordinal_from_32(value: u32) -> u16 {
-        (value & 0xFFFF) as u16
+        let [low, high, ..] = value.to_le_bytes();
+        u16::from_le_bytes([low, high])
     }
 
     /// Get ordinal from 64-bit thunk entry.
     #[must_use]
     pub fn ordinal_from_64(value: u64) -> u16 {
-        (value & 0xFFFF) as u16
+        let [low, high, ..] = value.to_le_bytes();
+        u16::from_le_bytes([low, high])
     }
 
     /// Get RVA to hint/name from 32-bit thunk entry.
@@ -200,7 +207,8 @@ impl ImportThunk {
     /// Get RVA to hint/name from 64-bit thunk entry.
     #[must_use]
     pub fn hint_name_rva_from_64(value: u64) -> u32 {
-        (value & 0x7FFF_FFFF) as u32
+        let [b0, b1, b2, b3, ..] = value.to_le_bytes();
+        u32::from_le_bytes([b0, b1, b2, b3]) & 0x7FFF_FFFF
     }
 }
 
@@ -367,9 +375,10 @@ impl ImportTable {
             )?;
 
             let (is_ordinal, ordinal, hint_rva) = if is_64bit {
-                let value = u64::from_le_bytes([
-                    data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-                ]);
+                let bytes = data
+                    .first_chunk::<8>()
+                    .ok_or_else(|| Error::buffer_too_small(8, data.len()))?;
+                let value = u64::from_le_bytes(*bytes);
                 if value == 0 {
                     return Ok(imports);
                 }
@@ -389,7 +398,10 @@ impl ImportTable {
                     (false, 0, hint_rva)
                 }
             } else {
-                let value = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                let bytes = data
+                    .first_chunk::<4>()
+                    .ok_or_else(|| Error::buffer_too_small(4, data.len()))?;
+                let value = u32::from_le_bytes(*bytes);
                 if value == 0 {
                     return Ok(imports);
                 }
@@ -416,7 +428,10 @@ impl ImportTable {
                 // Read hint (2 bytes) + name
                 let hint_data =
                     crate::parse_utils::read_exact_rva(read_at_rva, hint_rva, 2, "import hint")?;
-                let hint = u16::from_le_bytes([hint_data[0], hint_data[1]]);
+                let hint_bytes = hint_data
+                    .first_chunk::<2>()
+                    .ok_or_else(|| Error::buffer_too_small(2, hint_data.len()))?;
+                let hint = u16::from_le_bytes(*hint_bytes);
                 let name_rva = hint_rva.checked_add(2).ok_or_else(|| {
                     Error::invalid_data_directory("import hint/name RVA overflow")
                 })?;
@@ -532,8 +547,13 @@ impl ImportTableBuilder {
         if table.dlls.is_empty() {
             return Ok(0);
         }
+        Ok(self.layout(table)?.total_size)
+    }
 
-        let thunk_size = if self.is_64bit { 8 } else { 4 };
+    /// Validate the names in `table` and calculate the layout of the built
+    /// table. Do not call this function for an empty table.
+    fn layout(&self, table: &ImportTable) -> Result<ImportLayout> {
+        let thunk_size = self.thunk_size();
 
         // Import descriptors (one per DLL + null terminator)
         let descriptors_size = table
@@ -597,12 +617,27 @@ impl ImportTableBuilder {
                 .ok_or_else(|| Error::invalid_data_directory("import DLL names size overflow"))?;
         }
 
-        descriptors_size
+        let overflow = || Error::invalid_data_directory("import table size overflow");
+        let iat_offset = descriptors_size
             .checked_add(thunk_table_size) // ILT
-            .and_then(|size| size.checked_add(thunk_table_size)) // IAT
-            .and_then(|size| size.checked_add(hint_names_size))
-            .and_then(|size| size.checked_add(dll_names_size))
-            .ok_or_else(|| Error::invalid_data_directory("import table size overflow"))
+            .ok_or_else(overflow)?;
+        let hint_names_offset = iat_offset
+            .checked_add(thunk_table_size) // IAT
+            .ok_or_else(overflow)?;
+        let dll_names_offset = hint_names_offset
+            .checked_add(hint_names_size)
+            .ok_or_else(overflow)?;
+        let total_size = dll_names_offset
+            .checked_add(dll_names_size)
+            .ok_or_else(overflow)?;
+        Ok(ImportLayout {
+            descriptors_size,
+            thunk_table_size,
+            iat_offset,
+            hint_names_offset,
+            dll_names_offset,
+            total_size,
+        })
     }
 
     /// Build the import section data and return `(section_data, iat_rva, iat_size)`.
@@ -625,11 +660,11 @@ impl ImportTableBuilder {
     /// invalid-data-directory error if the table exceeds `u32`, its RVA range
     /// overflows, or (for PE32) an RVA would reach the ordinal flag bit.
     pub fn try_build(&self, table: &ImportTable) -> Result<(Vec<u8>, u32, u32)> {
-        let total_size = self.try_calculate_size(table)?;
-        if total_size == 0 {
+        if table.dlls.is_empty() {
             return Ok((Vec::new(), 0, 0));
         }
-        let size = u32::try_from(total_size)
+        let layout = self.layout(table)?;
+        let size = u32::try_from(layout.total_size)
             .map_err(|_| Error::invalid_data_directory("import table exceeds u32"))?;
         let end = self
             .base_rva
@@ -640,86 +675,61 @@ impl ImportTableBuilder {
                 "PE32 import hint/name RVAs would overlap the ordinal flag",
             ));
         }
-        self.write_table(table, total_size)
+        self.write_table(table, &layout)
     }
 
-    /// Serialize `table` into a buffer of `total_size` bytes, as computed by
-    /// [`Self::try_calculate_size`].
-    fn write_table(&self, table: &ImportTable, total_size: usize) -> Result<(Vec<u8>, u32, u32)> {
-        let thunk_size = if self.is_64bit { 8 } else { 4 };
-        let mut data = vec![0u8; total_size];
+    /// Serialize `table` into a new buffer with the parts at the offsets in
+    /// `layout`.
+    fn write_table(
+        &self,
+        table: &ImportTable,
+        layout: &ImportLayout,
+    ) -> Result<(Vec<u8>, u32, u32)> {
+        let thunk_size = self.thunk_size();
+        let mut data = vec![0u8; layout.total_size];
 
-        // Calculate offsets: descriptors, ILT, IAT, hint/name entries, DLL names.
-        let descriptors_size = (table.dlls.len() + 1) * ImportDescriptor::SIZE;
-
-        let lookup_table_offset = descriptors_size;
-        let mut total_thunks = 0usize;
-        for dll in &table.dlls {
-            total_thunks += dll.imports.len() + 1;
-        }
-        // The ILT and IAT have the same size.
-        let thunk_table_size = total_thunks * thunk_size;
-
-        let iat_offset = lookup_table_offset + thunk_table_size;
-
-        let hint_names_offset = iat_offset + thunk_table_size;
-        let mut hint_names_size = 0usize;
-        for dll in &table.dlls {
-            for import in &dll.imports {
-                if let ImportThunk::Name { name, .. } = import {
-                    let entry_size = 2 + name.len() + 1;
-                    hint_names_size += (entry_size + 1) & !1;
-                }
-            }
-        }
-
-        let dll_names_offset = hint_names_offset + hint_names_size;
-
-        // Write data
-        let mut desc_pos = 0usize;
-        let mut lookup_pos = lookup_table_offset;
-        let mut iat_pos = iat_offset;
-        let mut hint_name_pos = hint_names_offset;
-        let mut dll_name_pos = dll_names_offset;
+        // The parts are in this order: descriptors, ILT, IAT, hint/name
+        // entries, DLL names. The ILT starts after the descriptors.
+        let mut desc = Cursor::new(0);
+        let mut lookup = Cursor::new(layout.descriptors_size);
+        let mut iat = Cursor::new(layout.iat_offset);
+        let mut hint_name = Cursor::new(layout.hint_names_offset);
+        let mut dll_name = Cursor::new(layout.dll_names_offset);
 
         for dll in &table.dlls {
-            // Write DLL name
-            let dll_name_rva = self.rva_at(dll_name_pos)?;
-            let dll_name_bytes = dll.name.as_bytes();
-            data[dll_name_pos..dll_name_pos + dll_name_bytes.len()].copy_from_slice(dll_name_bytes);
-            dll_name_pos += dll_name_bytes.len() + 1; // +1 for null
+            // Write the DLL name. The zeroed buffer supplies the null terminator.
+            let dll_name_rva = self.rva_at(dll_name.offset())?;
+            dll_name.put(&mut data, dll.name.as_bytes())?;
+            dll_name.skip(1)?;
 
             // Write thunks (ILT and IAT)
-            let lookup_table_rva = self.rva_at(lookup_pos)?;
-            let first_thunk_rva = self.rva_at(iat_pos)?;
+            let lookup_table_rva = self.rva_at(lookup.offset())?;
+            let first_thunk_rva = self.rva_at(iat.offset())?;
 
             for import in &dll.imports {
                 let (by_ordinal, thunk_value) = match import {
                     ImportThunk::Ordinal(ord) => (true, u32::from(*ord)),
                     ImportThunk::Name { hint, name } => {
-                        // Write hint/name entry
-                        let hint_name_rva = self.rva_at(hint_name_pos)?;
-                        data[hint_name_pos..hint_name_pos + 2].copy_from_slice(&hint.to_le_bytes());
-                        let name_bytes = name.as_bytes();
-                        data[hint_name_pos + 2..hint_name_pos + 2 + name_bytes.len()]
-                            .copy_from_slice(name_bytes);
-                        let entry_size = 2 + name_bytes.len() + 1;
-                        hint_name_pos += (entry_size + 1) & !1; // Align to 2
+                        // Write the hint/name entry: hint, name, null terminator,
+                        // and padding to an even offset.
+                        let hint_name_rva = self.rva_at(hint_name.offset())?;
+                        hint_name.put(&mut data, &hint.to_le_bytes())?;
+                        hint_name.put(&mut data, name.as_bytes())?;
+                        hint_name.skip(1)?;
+                        hint_name.align_even()?;
 
                         (false, hint_name_rva)
                     }
                 };
 
                 // The IAT holds the same thunks as the ILT until the loader binds it.
-                self.write_thunk(&mut data[lookup_pos..], by_ordinal, thunk_value);
-                lookup_pos += thunk_size;
-                self.write_thunk(&mut data[iat_pos..], by_ordinal, thunk_value);
-                iat_pos += thunk_size;
+                self.write_thunk(&mut lookup, &mut data, by_ordinal, thunk_value)?;
+                self.write_thunk(&mut iat, &mut data, by_ordinal, thunk_value)?;
             }
 
             // Null terminator for thunks
-            lookup_pos += thunk_size;
-            iat_pos += thunk_size;
+            lookup.skip(thunk_size)?;
+            iat.skip(thunk_size)?;
 
             // Write import descriptor
             let descriptor = ImportDescriptor {
@@ -729,16 +739,20 @@ impl ImportTableBuilder {
                 name_rva: dll_name_rva,
                 first_thunk: first_thunk_rva,
             };
-            descriptor.write(&mut data[desc_pos..])?;
-            desc_pos += ImportDescriptor::SIZE;
+            desc.put(&mut data, &descriptor.to_array())?;
         }
 
         // Null terminator descriptor is already zeros
 
-        let iat_rva = self.rva_at(iat_offset)?;
-        let iat_size = u32::try_from(thunk_table_size)
+        let iat_rva = self.rva_at(layout.iat_offset)?;
+        let iat_size = u32::try_from(layout.thunk_table_size)
             .map_err(|_| Error::invalid_data_directory("import address table exceeds u32"))?;
         Ok((data, iat_rva, iat_size))
+    }
+
+    /// Size of one ILT/IAT thunk: 8 bytes for PE32+, 4 bytes for PE32.
+    fn thunk_size(&self) -> usize {
+        if self.is_64bit { 8 } else { 4 }
     }
 
     /// RVA of byte `offset` within the built import data.
@@ -749,17 +763,42 @@ impl ImportTableBuilder {
             .ok_or_else(|| Error::invalid_data_directory("import table RVA overflow"))
     }
 
-    /// Write one ILT/IAT thunk at the start of `out`: an ordinal (with the
-    /// ordinal flag set) or a hint/name RVA, sized for PE32 or PE32+.
-    fn write_thunk(&self, out: &mut [u8], by_ordinal: bool, value: u32) {
+    /// Write one ILT/IAT thunk at `cursor`: an ordinal (with the ordinal flag
+    /// set) or a hint/name RVA, sized for PE32 or PE32+.
+    fn write_thunk(
+        &self,
+        cursor: &mut Cursor,
+        data: &mut [u8],
+        by_ordinal: bool,
+        value: u32,
+    ) -> Result<()> {
         if self.is_64bit {
             let flag = if by_ordinal { IMAGE_ORDINAL_FLAG64 } else { 0 };
-            out[..8].copy_from_slice(&(flag | u64::from(value)).to_le_bytes());
+            cursor.put(data, &(flag | u64::from(value)).to_le_bytes())
         } else {
             let flag = if by_ordinal { IMAGE_ORDINAL_FLAG32 } else { 0 };
-            out[..4].copy_from_slice(&(flag | value).to_le_bytes());
+            cursor.put(data, &(flag | value).to_le_bytes())
         }
     }
+}
+
+/// Offsets and sizes of the parts of a built import table.
+///
+/// The parts are in this order: descriptors, ILT, IAT, hint/name entries,
+/// DLL names. The ILT starts at `descriptors_size`.
+struct ImportLayout {
+    /// Size of the descriptor array, with its null terminator.
+    descriptors_size: usize,
+    /// Size of one thunk table. The ILT and the IAT have the same size.
+    thunk_table_size: usize,
+    /// Offset of the IAT.
+    iat_offset: usize,
+    /// Offset of the first hint/name entry.
+    hint_names_offset: usize,
+    /// Offset of the first DLL name.
+    dll_names_offset: usize,
+    /// Size of the full table.
+    total_size: usize,
 }
 
 #[cfg(test)]
@@ -898,5 +937,44 @@ mod tests {
                 ImportThunk::Ordinal(42),
             ]
         );
+    }
+
+    #[test]
+    fn test_import_table_builder_pe32_layout() {
+        let mut table = ImportTable::default();
+        table.add_named_import("kernel32.dll", "Sleep", 7);
+        table.add_ordinal_import("kernel32.dll", 42);
+
+        let (data, iat_rva, iat_size) = ImportTableBuilder::new(false, 0x2000).build(&table);
+        // Descriptors 0..40, ILT 40..52, IAT 52..64, hint/name 64..72, DLL name 72..85.
+        assert_eq!(data.len(), 85);
+        assert_eq!((iat_rva, iat_size), (0x2034, 12));
+        let descriptor = ImportDescriptor::parse(&data).unwrap();
+        assert_eq!(
+            descriptor,
+            ImportDescriptor {
+                original_first_thunk: 0x2028,
+                time_date_stamp: 0,
+                forwarder_chain: 0,
+                name_rva: 0x2048,
+                first_thunk: 0x2034,
+            }
+        );
+        assert!(data[20..40].iter().all(|&byte| byte == 0));
+        let thunks: Vec<u8> = [0x2040u32, 0x8000_002A, 0]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        assert_eq!(&data[40..52], thunks.as_slice());
+        assert_eq!(&data[52..64], thunks.as_slice());
+        assert_eq!(&data[64..72], b"\x07\x00Sleep\0");
+        assert_eq!(&data[72..], b"kernel32.dll\0");
+    }
+
+    #[test]
+    fn test_import_descriptor_write_short_buffer() {
+        let mut buf = [0u8; ImportDescriptor::SIZE - 1];
+        assert!(ImportDescriptor::default().write(&mut buf).is_err());
+        assert!(ImportDescriptor::parse(&buf).is_err());
     }
 }

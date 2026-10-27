@@ -1,0 +1,122 @@
+//! Exception table that selects the record format from the machine type.
+
+use super::{ExceptionDirectory, PackedExceptionDirectory};
+use crate::coff::MachineType;
+use crate::prelude::*;
+use crate::{Error, Result};
+
+/// Architecture-aware representation of the PE exception directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExceptionTable {
+    /// AMD64 `RUNTIME_FUNCTION` records.
+    X64(ExceptionDirectory),
+    /// ARM/Thumb packed `.pdata` records.
+    Arm(PackedExceptionDirectory),
+    /// ARM64, ARM64EC, or ARM64X packed `.pdata` records.
+    Arm64(PackedExceptionDirectory),
+    /// Bytes for machines whose exception ABI is not modelled by this crate.
+    Raw {
+        /// `IMAGE_FILE_HEADER.Machine` value.
+        machine: u16,
+        /// Raw table bytes.
+        data: Vec<u8>,
+    },
+}
+
+impl ExceptionTable {
+    /// Parse the exception directory according to `machine`.
+    ///
+    /// # Errors
+    /// Returns an error if the table cannot be read or parsed, or if ARM/ARM64
+    /// records are misaligned or (ARM64) use reserved flag 3.
+    pub fn parse<F>(machine: u16, pdata_rva: u32, pdata_size: u32, read_at_rva: F) -> Result<Self>
+    where
+        F: Fn(u32, usize) -> Option<Vec<u8>>,
+    {
+        match MachineType::from_u16(machine) {
+            Some(MachineType::Amd64) => {
+                ExceptionDirectory::parse(pdata_rva, pdata_size, read_at_rva).map(Self::X64)
+            }
+            Some(MachineType::Arm | MachineType::ArmNt | MachineType::Thumb) => {
+                let directory =
+                    PackedExceptionDirectory::parse(pdata_rva, pdata_size, read_at_rva)?;
+                if directory
+                    .functions
+                    .iter()
+                    .any(|function| !function.begin_address.is_multiple_of(2))
+                {
+                    return Err(Error::invalid_data_directory(
+                        "ARM runtime-function address is not instruction-aligned",
+                    ));
+                }
+                Ok(Self::Arm(directory))
+            }
+            Some(MachineType::Arm64 | MachineType::Arm64Ec | MachineType::Arm64X) => {
+                let directory =
+                    PackedExceptionDirectory::parse(pdata_rva, pdata_size, read_at_rva)?;
+                if directory.functions.iter().any(|function| {
+                    !function.begin_address.is_multiple_of(4) || function.flag() == 3
+                }) {
+                    return Err(Error::invalid_data_directory(
+                        "ARM64 runtime-function record is misaligned or uses reserved flag 3",
+                    ));
+                }
+                Ok(Self::Arm64(directory))
+            }
+            _ => crate::parse_utils::read_exact_rva(
+                &read_at_rva,
+                pdata_rva,
+                pdata_size as usize,
+                "raw exception table",
+            )
+            .map(|data| Self::Raw { machine, data }),
+        }
+    }
+
+    /// Serialize to bytes.
+    ///
+    /// # Panics
+    /// Panics if [`Self::try_to_bytes`] fails.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.try_to_bytes()
+            .expect("exception-table build failed: use try_to_bytes()")
+    }
+
+    /// Serialize to bytes.
+    ///
+    /// # Errors
+    /// Returns an error if the table is invalid or its size exceeds `u32`.
+    pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
+        match self {
+            Self::X64(directory) => directory.try_to_bytes(),
+            Self::Arm(directory) | Self::Arm64(directory) => directory.try_to_bytes(),
+            Self::Raw { data, .. } => {
+                u32::try_from(data.len()).map_err(|_| {
+                    Error::invalid_data_directory("exception table size exceeds u32")
+                })?;
+                Ok(data.clone())
+            }
+        }
+    }
+
+    /// Number of records (or bytes for [`Self::Raw`]).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::X64(directory) => directory.len(),
+            Self::Arm(directory) | Self::Arm64(directory) => directory.len(),
+            Self::Raw { data, .. } => data.len(),
+        }
+    }
+
+    /// Whether the table is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::X64(directory) => directory.is_empty(),
+            Self::Arm(directory) | Self::Arm64(directory) => directory.is_empty(),
+            Self::Raw { data, .. } => data.is_empty(),
+        }
+    }
+}

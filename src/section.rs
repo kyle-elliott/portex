@@ -102,23 +102,22 @@ impl SectionHeader {
     /// or owned with lossy conversion if it contains invalid bytes.
     #[must_use]
     pub fn name_str(&self) -> Cow<'_, str> {
-        let end = self.name.iter().position(|&b| b == 0).unwrap_or(8);
-        String::from_utf8_lossy(&self.name[..end])
+        String::from_utf8_lossy(self.name_bytes())
     }
 
     /// Get the section name as raw bytes (without null padding).
     #[must_use]
     pub fn name_bytes(&self) -> &[u8] {
-        let end = self.name.iter().position(|&b| b == 0).unwrap_or(8);
-        &self.name[..end]
+        // `split` always yields at least one item.
+        self.name.split(|&b| b == 0).next().unwrap_or_default()
     }
 
     /// Set the section name from a string.
     pub fn set_name(&mut self, name: &str) {
         self.name = [0u8; 8];
-        let bytes = name.as_bytes();
-        let len = bytes.len().min(8);
-        self.name[..len].copy_from_slice(&bytes[..len]);
+        for (dest, &src) in self.name.iter_mut().zip(name.as_bytes()) {
+            *dest = src;
+        }
     }
 
     /// Check if the section is executable.
@@ -169,9 +168,9 @@ impl SectionHeader {
     ///
     /// Returns an error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::SIZE {
+        let Some(data) = data.first_chunk::<{ Self::SIZE }>() else {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
-        }
+        };
 
         let mut name = [0u8; 8];
         name.copy_from_slice(&data[0..8]);
@@ -393,13 +392,30 @@ impl Section {
     ///
     /// # Panics
     ///
-    /// Panics if `data.len()` exceeds `u32::MAX`, which can only happen when
-    /// `data` was replaced directly with an oversized buffer.
+    /// Panics if `data.len()` exceeds `u32::MAX`. This can only occur if a
+    /// caller replaces `data` directly with an oversized buffer. Use
+    /// [`Self::try_materialize_virtual_data`] for a fallible update.
     pub fn materialize_virtual_data(&mut self) {
+        self.try_materialize_virtual_data().expect(
+            "section data exceeds u32: use try_materialize_virtual_data() for fallible updates",
+        );
+    }
+
+    /// Mark every byte in this section as initialized raw-file data.
+    ///
+    /// This is the fallible form of [`Self::materialize_virtual_data`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data.len()` exceeds `u32::MAX`. The section does
+    /// not change in that case.
+    pub fn try_materialize_virtual_data(&mut self) -> Result<()> {
+        let size = u32::try_from(self.data.len())
+            .map_err(|_| Error::invalid_section("section data exceeds u32"))?;
         self.mapped_raw_size = None;
         self.mapped_data_len = 0;
-        self.header.virtual_size = u32::try_from(self.data.len())
-            .expect("parsed section data is always representable as u32");
+        self.header.virtual_size = size;
+        Ok(())
     }
 
     pub(crate) fn preserved_raw_size(&self) -> Option<u32> {
@@ -420,13 +436,8 @@ impl Section {
         if !self.contains_rva(rva) {
             return None;
         }
-        let offset = rva.checked_sub(self.header.virtual_address)? as usize;
-        let end = offset.checked_add(len)?;
-        if end <= self.data.len() {
-            Some(&self.data[offset..end])
-        } else {
-            None
-        }
+        let offset = usize::try_from(rva.checked_sub(self.header.virtual_address)?).ok()?;
+        self.data.get(offset..offset.checked_add(len)?)
     }
 
     /// Get mutable data at an RVA offset within this section.
@@ -434,13 +445,8 @@ impl Section {
         if !self.contains_rva(rva) {
             return None;
         }
-        let offset = rva.checked_sub(self.header.virtual_address)? as usize;
-        let end = offset.checked_add(len)?;
-        if end <= self.data.len() {
-            Some(&mut self.data[offset..end])
-        } else {
-            None
-        }
+        let offset = usize::try_from(rva.checked_sub(self.header.virtual_address)?).ok()?;
+        self.data.get_mut(offset..offset.checked_add(len)?)
     }
 }
 
@@ -534,5 +540,32 @@ mod tests {
         assert!(header.contains_rva(0x2200));
         assert_eq!(header.rva_to_offset(0x21ff), Some(0x5ff));
         assert_eq!(header.rva_to_offset(0x2200), None);
+    }
+
+    #[test]
+    fn test_name_bytes_full_and_padded() {
+        let mut header = SectionHeader::default();
+        header.set_name(".verylongname");
+        assert_eq!(header.name_bytes(), b".verylon");
+        header.set_name("");
+        assert_eq!(header.name_bytes(), b"");
+    }
+
+    #[test]
+    fn test_parse_short_header_fails() {
+        assert!(SectionHeader::parse(&[0u8; SectionHeader::SIZE - 1]).is_err());
+    }
+
+    #[test]
+    fn test_try_materialize_virtual_data() {
+        let header = SectionHeader {
+            size_of_raw_data: 2,
+            ..SectionHeader::default()
+        };
+        let mut section = Section::from_mapped_header_and_data(header, vec![1, 2, 0, 0]);
+        assert_eq!(section.preserved_raw_size(), Some(2));
+        section.try_materialize_virtual_data().unwrap();
+        assert_eq!(section.preserved_raw_size(), None);
+        assert_eq!(section.header.virtual_size, 4);
     }
 }

@@ -130,9 +130,9 @@ impl DebugDirectory {
     /// # Errors
     /// Returns an error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::SIZE {
+        let Some(data) = data.first_chunk::<{ Self::SIZE }>() else {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
-        }
+        };
 
         Ok(Self {
             characteristics: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
@@ -198,25 +198,29 @@ impl CodeViewRsds {
         if data.len() < Self::MIN_SIZE {
             return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
         }
-
-        // Verify signature
-        let sig = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        if sig != CV_SIGNATURE_RSDS {
+        // The length check above makes each split succeed.
+        let Some((signature, rest)) = data.split_first_chunk::<4>() else {
+            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
+        };
+        if u32::from_le_bytes(*signature) != CV_SIGNATURE_RSDS {
             return Err(Error::invalid_data_directory("Invalid RSDS signature"));
         }
-
-        let mut guid = [0u8; 16];
-        guid.copy_from_slice(&data[4..20]);
-        let age = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
+        let Some((guid, rest)) = rest.split_first_chunk::<16>() else {
+            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
+        };
+        let Some((age, path_data)) = rest.split_first_chunk::<4>() else {
+            return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
+        };
+        let guid = *guid;
+        let age = u32::from_le_bytes(*age);
 
         // Read null-terminated path
-        let path_data = &data[24..];
-        let end = path_data
+        let path = path_data
             .iter()
             .position(|&b| b == 0)
+            .and_then(|end| path_data.get(..end))
             .ok_or_else(|| Error::invalid_data_directory("RSDS PDB path is not null-terminated"))?;
-        let pdb_path =
-            String::from_utf8(path_data[..end].to_vec()).map_err(|_| Error::invalid_utf8())?;
+        let pdb_path = String::from_utf8(path.to_vec()).map_err(|_| Error::invalid_utf8())?;
 
         Ok(Self {
             guid,
@@ -419,12 +423,10 @@ impl DebugInfo {
             // Parse CodeView if present
             if dir.get_type() == DebugType::CodeView
                 && let Some(cv_data) = payload.as_ref()
-                && cv_data.len() >= 4
+                && let Some(signature) = cv_data.first_chunk::<4>()
+                && u32::from_le_bytes(*signature) == CV_SIGNATURE_RSDS
             {
-                let sig = u32::from_le_bytes([cv_data[0], cv_data[1], cv_data[2], cv_data[3]]);
-                if sig == CV_SIGNATURE_RSDS {
-                    codeview = Some(CodeViewRsds::parse(cv_data)?);
-                }
+                codeview = Some(CodeViewRsds::parse(cv_data)?);
             }
 
             directories.push(dir);
@@ -523,7 +525,10 @@ impl DebugBuilder {
             ..Default::default()
         };
 
-        let mut data = Vec::with_capacity(DebugDirectory::SIZE + cv_data.len());
+        let capacity = DebugDirectory::SIZE
+            .checked_add(cv_data.len())
+            .ok_or_else(|| Error::invalid_data_directory("CodeView payload size overflow"))?;
+        let mut data = Vec::with_capacity(capacity);
         data.extend_from_slice(&dir.to_bytes());
         data.extend_from_slice(&cv_data);
 
@@ -634,9 +639,10 @@ impl DebugBuilder {
             dirs.push(dir);
         }
 
-        for (index, dir) in dirs.iter().enumerate() {
-            let offset = index * DebugDirectory::SIZE;
-            data[offset..offset + DebugDirectory::SIZE].copy_from_slice(&dir.to_bytes());
+        // `data` starts with one `DebugDirectory::SIZE` slot for each entry in `dirs`.
+        let (slots, _) = data.as_chunks_mut::<{ DebugDirectory::SIZE }>();
+        for (slot, dir) in slots.iter_mut().zip(&dirs) {
+            *slot = dir.to_bytes();
         }
 
         Ok((data, dir_size, dirs))

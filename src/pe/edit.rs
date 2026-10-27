@@ -35,7 +35,10 @@ impl PeImage {
             .ok_or_else(|| Error::invalid_section("section index is out of range"))?;
         let offset = section.try_append_data(data)?;
         candidate.try_update_layout()?;
-        let section = &candidate.sections[section_index];
+        let section = candidate
+            .sections
+            .get(section_index)
+            .ok_or_else(|| Error::invalid_section("section index is out of range"))?;
         let actual_rva = section
             .header
             .virtual_address
@@ -366,13 +369,13 @@ impl PeImage {
     /// **Warning**: Removing a section may break the PE if other data directories
     /// or code reference data in that section. Use with caution.
     pub fn remove_section_at(&mut self, index: usize) -> Option<Section> {
-        if index < self.sections.len() {
-            self.coff_header.number_of_sections =
-                u16::try_from(self.sections.len() - 1).unwrap_or(u16::MAX);
-            Some(self.sections.remove(index))
-        } else {
-            None
+        if index >= self.sections.len() {
+            return None;
         }
+        let section = self.sections.remove(index);
+        self.coff_header.number_of_sections =
+            u16::try_from(self.sections.len()).unwrap_or(u16::MAX);
+        Some(section)
     }
 
     /// Find a section by name.

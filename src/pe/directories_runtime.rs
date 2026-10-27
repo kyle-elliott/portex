@@ -319,15 +319,14 @@ impl PeImage {
     #[must_use]
     pub fn rich_header(&self) -> Option<crate::rich::RichHeader> {
         let pe_offset = usize::try_from(self.dos_header.e_lfanew).ok()?;
-        let stub_size = pe_offset.checked_sub(crate::dos::DosHeader::SIZE)?;
-        if self.dos_stub.len() != stub_size {
+        if pe_offset.checked_sub(crate::dos::DosHeader::SIZE)? != self.dos_stub.len() {
             return None;
         }
 
-        let mut bytes = vec![0; pe_offset.checked_add(4)?];
+        let mut bytes = vec![0; crate::dos::DosHeader::SIZE];
         self.dos_header.write(&mut bytes).ok()?;
-        bytes[crate::dos::DosHeader::SIZE..pe_offset].copy_from_slice(&self.dos_stub);
-        bytes[pe_offset..pe_offset + 4].copy_from_slice(&crate::coff::PE_SIGNATURE.to_le_bytes());
+        bytes.extend_from_slice(&self.dos_stub);
+        bytes.extend_from_slice(&crate::coff::PE_SIGNATURE.to_le_bytes());
         crate::rich::RichHeader::parse(&bytes)
     }
 

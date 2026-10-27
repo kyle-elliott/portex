@@ -98,22 +98,22 @@ impl ExportDirectory {
     /// Returns [`Error::buffer_too_small`] if `data` is shorter than
     /// [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::SIZE {
+        let Some(d) = data.first_chunk::<{ Self::SIZE }>() else {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
-        }
+        };
 
         Ok(Self {
-            characteristics: u32::from_le_bytes([data[0], data[1], data[2], data[3]]),
-            time_date_stamp: u32::from_le_bytes([data[4], data[5], data[6], data[7]]),
-            major_version: u16::from_le_bytes([data[8], data[9]]),
-            minor_version: u16::from_le_bytes([data[10], data[11]]),
-            name_rva: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
-            base: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
-            number_of_functions: u32::from_le_bytes([data[20], data[21], data[22], data[23]]),
-            number_of_names: u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
-            address_of_functions: u32::from_le_bytes([data[28], data[29], data[30], data[31]]),
-            address_of_names: u32::from_le_bytes([data[32], data[33], data[34], data[35]]),
-            address_of_name_ordinals: u32::from_le_bytes([data[36], data[37], data[38], data[39]]),
+            characteristics: u32::from_le_bytes([d[0], d[1], d[2], d[3]]),
+            time_date_stamp: u32::from_le_bytes([d[4], d[5], d[6], d[7]]),
+            major_version: u16::from_le_bytes([d[8], d[9]]),
+            minor_version: u16::from_le_bytes([d[10], d[11]]),
+            name_rva: u32::from_le_bytes([d[12], d[13], d[14], d[15]]),
+            base: u32::from_le_bytes([d[16], d[17], d[18], d[19]]),
+            number_of_functions: u32::from_le_bytes([d[20], d[21], d[22], d[23]]),
+            number_of_names: u32::from_le_bytes([d[24], d[25], d[26], d[27]]),
+            address_of_functions: u32::from_le_bytes([d[28], d[29], d[30], d[31]]),
+            address_of_names: u32::from_le_bytes([d[32], d[33], d[34], d[35]]),
+            address_of_name_ordinals: u32::from_le_bytes([d[36], d[37], d[38], d[39]]),
         })
     }
 
@@ -297,15 +297,10 @@ impl ExportTable {
         Ok(exports)
     }
 
-    /// Check the table counts and that the address, name-pointer, and
-    /// ordinal tables all lie inside the export directory range.
+    /// Check that the address, name-pointer, and ordinal tables all lie inside
+    /// the export directory range. The name count can exceed the function
+    /// count, because several names (aliases) can refer to one function.
     fn validate_tables(dir: &ExportDirectory, export_rva: u32, export_size: u32) -> Result<()> {
-        if dir.number_of_names > dir.number_of_functions {
-            return Err(Error::invalid_data_directory(format!(
-                "export name count {} exceeds function count {}",
-                dir.number_of_names, dir.number_of_functions
-            )));
-        }
         crate::parse_utils::bounded_table_range(
             dir.address_of_functions,
             dir.number_of_functions,
@@ -355,14 +350,11 @@ impl ExportTable {
                 .ok_or_else(|| {
                     Error::invalid_data_directory("export address-table RVA overflow")
                 })?;
-            let addr_data = crate::parse_utils::read_exact_rva(
+            let func_rva = u32::from_le_bytes(read_array_rva(
                 read_at_rva,
                 addr_rva,
-                4,
                 "export address entry",
-            )?;
-            let func_rva =
-                u32::from_le_bytes([addr_data[0], addr_data[1], addr_data[2], addr_data[3]]);
+            )?);
 
             if func_rva == 0 {
                 continue; // Empty slot
@@ -417,18 +409,11 @@ impl ExportTable {
                 Error::invalid_data_directory("export name-table offset overflow")
             })?)
             .ok_or_else(|| Error::invalid_data_directory("export name-table RVA overflow"))?;
-        let name_ptr_data = crate::parse_utils::read_exact_rva(
+        let name_rva = u32::from_le_bytes(read_array_rva(
             read_at_rva,
             name_ptr_rva,
-            4,
             "export name pointer",
-        )?;
-        let name_rva = u32::from_le_bytes([
-            name_ptr_data[0],
-            name_ptr_data[1],
-            name_ptr_data[2],
-            name_ptr_data[3],
-        ]);
+        )?);
 
         // Read ordinal index
         let ord_rva = dir
@@ -437,9 +422,7 @@ impl ExportTable {
                 Error::invalid_data_directory("export ordinal-table offset overflow")
             })?)
             .ok_or_else(|| Error::invalid_data_directory("export ordinal-table RVA overflow"))?;
-        let ord_data =
-            crate::parse_utils::read_exact_rva(read_at_rva, ord_rva, 2, "export ordinal")?;
-        let ord_index = u16::from_le_bytes([ord_data[0], ord_data[1]]);
+        let ord_index = u16::from_le_bytes(read_array_rva(read_at_rva, ord_rva, "export ordinal")?);
 
         // Read name
         let name = Self::read_string(
@@ -492,43 +475,66 @@ impl ExportTable {
     }
 
     /// Add an exported function by RVA.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_add_export`] returns an error.
     pub fn add_export(&mut self, name: Option<&str>, rva: u32) {
-        let ordinal = if self.exports.is_empty() {
-            self.directory.base
-        } else {
-            self.exports
-                .iter()
-                .map(|e| e.ordinal)
-                .max()
-                .unwrap_or(self.directory.base)
-                + 1
-        };
-        self.exports.push(ExportedFunction {
-            ordinal,
-            name: name.map(str::to_string),
-            aliases: Vec::new(),
-            address: ExportAddress::Rva(rva),
-        });
+        self.try_add_export(name, rva)
+            .expect("export ordinal overflow: use try_add_export()");
+    }
+
+    /// Add an exported function by RVA.
+    ///
+    /// The new export gets the ordinal after the highest existing ordinal.
+    /// If the table has no exports, the new export gets the ordinal base.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::invalid_data_directory`] if the highest existing
+    /// ordinal is `u32::MAX`.
+    pub fn try_add_export(&mut self, name: Option<&str>, rva: u32) -> Result<()> {
+        self.push_export(name, ExportAddress::Rva(rva))
     }
 
     /// Add a forwarded export.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_add_forwarder`] returns an error.
     pub fn add_forwarder(&mut self, name: Option<&str>, forward_to: &str) {
-        let ordinal = if self.exports.is_empty() {
-            self.directory.base
-        } else {
-            self.exports
-                .iter()
-                .map(|e| e.ordinal)
-                .max()
-                .unwrap_or(self.directory.base)
-                + 1
+        self.try_add_forwarder(name, forward_to)
+            .expect("export ordinal overflow: use try_add_forwarder()");
+    }
+
+    /// Add a forwarded export.
+    ///
+    /// The new export gets the ordinal after the highest existing ordinal.
+    /// If the table has no exports, the new export gets the ordinal base.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::invalid_data_directory`] if the highest existing
+    /// ordinal is `u32::MAX`.
+    pub fn try_add_forwarder(&mut self, name: Option<&str>, forward_to: &str) -> Result<()> {
+        self.push_export(name, ExportAddress::Forwarder(forward_to.to_string()))
+    }
+
+    /// Push an export with the next free ordinal.
+    fn push_export(&mut self, name: Option<&str>, address: ExportAddress) -> Result<()> {
+        let ordinal = match self.exports.iter().map(|e| e.ordinal).max() {
+            None => self.directory.base,
+            Some(highest) => highest
+                .checked_add(1)
+                .ok_or_else(|| Error::invalid_data_directory("export ordinal overflow"))?,
         };
         self.exports.push(ExportedFunction {
             ordinal,
             name: name.map(str::to_string),
             aliases: Vec::new(),
-            address: ExportAddress::Forwarder(forward_to.to_string()),
+            address,
         });
+        Ok(())
     }
 
     /// Set the DLL name.
@@ -580,46 +586,7 @@ impl ExportTableBuilder {
         if table.exports.is_empty() && table.dll_name.is_empty() {
             return Ok(0);
         }
-        let dimensions = export_dimensions(table)?;
-        let eat_size = dimensions
-            .function_count
-            .checked_mul(4)
-            .ok_or_else(|| Error::invalid_data_directory("export address-table size overflow"))?;
-        let name_ptr_size = dimensions
-            .named_count
-            .checked_mul(4)
-            .ok_or_else(|| Error::invalid_data_directory("export name-table size overflow"))?;
-        let ordinal_size = dimensions
-            .named_count
-            .checked_mul(2)
-            .ok_or_else(|| Error::invalid_data_directory("export ordinal-table size overflow"))?;
-        let dll_name_size = checked_string_size(&table.dll_name, "export DLL name")?;
-
-        let mut names_size = 0usize;
-        let mut forwarders_size = 0usize;
-        for export in &table.exports {
-            for name in export.name.iter().chain(export.aliases.iter()) {
-                names_size = names_size
-                    .checked_add(checked_string_size(name, "export name")?)
-                    .ok_or_else(|| Error::invalid_data_directory("export names size overflow"))?;
-            }
-            if let ExportAddress::Forwarder(forwarder) = &export.address {
-                forwarders_size = forwarders_size
-                    .checked_add(checked_string_size(forwarder, "export forwarder")?)
-                    .ok_or_else(|| {
-                        Error::invalid_data_directory("export forwarder size overflow")
-                    })?;
-            }
-        }
-
-        ExportDirectory::SIZE
-            .checked_add(eat_size)
-            .and_then(|size| size.checked_add(name_ptr_size))
-            .and_then(|size| size.checked_add(ordinal_size))
-            .and_then(|size| size.checked_add(dll_name_size))
-            .and_then(|size| size.checked_add(names_size))
-            .and_then(|size| size.checked_add(forwarders_size))
-            .ok_or_else(|| Error::invalid_data_directory("export table size overflow"))
+        Ok(export_layout(table)?.total_size)
     }
 
     /// Build the export section data and return (`section_data`, `export_size`).
@@ -649,87 +616,23 @@ impl ExportTableBuilder {
             return Ok((Vec::new(), 0));
         }
 
-        let dimensions = export_dimensions(table)?;
-        let total_size = Self::try_calculate_size(table)?;
-        let total_size_u32 = u32::try_from(total_size)
+        let layout = export_layout(table)?;
+        let dimensions = layout.dimensions;
+        let total_size_u32 = u32::try_from(layout.total_size)
             .map_err(|_| Error::invalid_data_directory("export table exceeds u32"))?;
         self.base_rva
             .checked_add(total_size_u32)
             .ok_or_else(|| Error::invalid_data_directory("export table RVA range overflow"))?;
-        let mut data = vec![0u8; total_size];
+        let mut data = vec![0u8; layout.total_size];
 
-        // Calculate offsets
-        let eat_offset = ExportDirectory::SIZE;
-        let eat_size = dimensions.function_count * 4;
-        let name_ptr_offset = eat_offset + eat_size;
-        let name_ptr_size = dimensions.named_count * 4;
-        let ordinal_table_offset = name_ptr_offset + name_ptr_size;
-        let ordinal_table_size = dimensions.named_count * 2;
-        let dll_name_offset = ordinal_table_offset + ordinal_table_size;
-        let dll_name_size = table.dll_name.len() + 1;
-        let strings_offset = dll_name_offset + dll_name_size;
-
-        // Write DLL name
-        let dll_name_rva = checked_rva(self.base_rva, dll_name_offset, "export DLL name")?;
-        data[dll_name_offset..dll_name_offset + table.dll_name.len()]
-            .copy_from_slice(table.dll_name.as_bytes());
-
-        // Write every function name and alias, tracking its EAT index.
-        let mut string_pos = strings_offset;
-        let mut name_rvas: Vec<(&str, u16, u32)> = Vec::with_capacity(dimensions.named_count);
-        for export in &table.exports {
-            let eat_index = export
-                .ordinal
-                .checked_sub(table.directory.base)
-                .and_then(|index| u16::try_from(index).ok())
-                .ok_or_else(|| {
-                    Error::invalid_data_directory(
-                        "named export ordinal index does not fit the u16 name table",
-                    )
-                })?;
-            for name in export.name.iter().chain(export.aliases.iter()) {
-                let name_rva = checked_rva(self.base_rva, string_pos, "export name")?;
-                data[string_pos..string_pos + name.len()].copy_from_slice(name.as_bytes());
-                string_pos += name.len() + 1;
-                name_rvas.push((name.as_str(), eat_index, name_rva));
-            }
-        }
-
-        // Write forwarder strings and populate sparse EAT slots.
-        let mut eat_entries = vec![0u32; dimensions.function_count];
-        for export in &table.exports {
-            let index = usize::try_from(export.ordinal - table.directory.base)
-                .map_err(|_| Error::invalid_data_directory("export ordinal index overflow"))?;
-            eat_entries[index] = match &export.address {
-                ExportAddress::Rva(rva) => *rva,
-                ExportAddress::Forwarder(fwd) => {
-                    let fwd_rva = checked_rva(self.base_rva, string_pos, "export forwarder")?;
-                    data[string_pos..string_pos + fwd.len()].copy_from_slice(fwd.as_bytes());
-                    string_pos += fwd.len() + 1;
-                    fwd_rva
-                }
-            };
-        }
-
-        // Write Export Address Table (EAT)
-        for (i, rva) in eat_entries.iter().enumerate() {
-            let offset = eat_offset + i * 4;
-            data[offset..offset + 4].copy_from_slice(&rva.to_le_bytes());
-        }
+        let dll_name_rva = checked_rva(self.base_rva, layout.dll_name_offset, "export DLL name")?;
+        put_c_string(&mut data, layout.dll_name_offset, &table.dll_name)?;
+        let (mut names, string_pos) = self.write_names(&mut data, table, &layout)?;
+        let eat_entries = self.write_forwarders(&mut data, table, &layout, string_pos)?;
 
         // Sort named exports by name for binary search compatibility
-        name_rvas.sort_by(|left, right| left.0.cmp(right.0));
-
-        // Write Name Pointer Table and Ordinal Table
-        for (i, (_, eat_index, name_rva)) in name_rvas.iter().enumerate() {
-            // Name pointer
-            let npt_offset = name_ptr_offset + i * 4;
-            data[npt_offset..npt_offset + 4].copy_from_slice(&name_rva.to_le_bytes());
-
-            // Ordinal (index into EAT)
-            let ord_offset = ordinal_table_offset + i * 2;
-            data[ord_offset..ord_offset + 2].copy_from_slice(&eat_index.to_le_bytes());
-        }
+        names.sort_by(|left, right| left.name.cmp(right.name));
+        write_tables(&mut data, &layout, &eat_entries, &names)?;
 
         // Build and write directory
         let directory = ExportDirectory {
@@ -744,25 +647,254 @@ impl ExportTableBuilder {
             number_of_names: u32::try_from(dimensions.named_count)
                 .map_err(|_| Error::invalid_data_directory("export name count exceeds u32"))?,
             address_of_functions: if dimensions.function_count > 0 {
-                checked_rva(self.base_rva, eat_offset, "export address table")?
+                checked_rva(self.base_rva, ExportDirectory::SIZE, "export address table")?
             } else {
                 0
             },
             address_of_names: if dimensions.named_count > 0 {
-                checked_rva(self.base_rva, name_ptr_offset, "export name table")?
+                checked_rva(self.base_rva, layout.name_ptr_offset, "export name table")?
             } else {
                 0
             },
             address_of_name_ordinals: if dimensions.named_count > 0 {
-                checked_rva(self.base_rva, ordinal_table_offset, "export ordinal table")?
+                checked_rva(
+                    self.base_rva,
+                    layout.ordinal_table_offset,
+                    "export ordinal table",
+                )?
             } else {
                 0
             },
         };
-        directory.write(&mut data[..ExportDirectory::SIZE])?;
+        directory.write(&mut data)?;
 
         Ok((data, total_size_u32))
     }
+
+    /// Write every function name and alias at the start of the string area.
+    ///
+    /// Returns an entry for each written name, in table order. Also returns
+    /// the offset after the last name.
+    fn write_names<'a>(
+        &self,
+        data: &mut [u8],
+        table: &'a ExportTable,
+        layout: &ExportLayout,
+    ) -> Result<(Vec<NameEntry<'a>>, usize)> {
+        let mut string_pos = layout.strings_offset;
+        let mut names = Vec::with_capacity(layout.dimensions.named_count);
+        for export in &table.exports {
+            if export.name.is_none() && export.aliases.is_empty() {
+                continue;
+            }
+            let eat_index = export
+                .ordinal
+                .checked_sub(table.directory.base)
+                .and_then(|index| u16::try_from(index).ok())
+                .ok_or_else(|| {
+                    Error::invalid_data_directory(
+                        "named export ordinal index does not fit the u16 name table",
+                    )
+                })?;
+            for name in export.name.iter().chain(export.aliases.iter()) {
+                let rva = checked_rva(self.base_rva, string_pos, "export name")?;
+                string_pos = put_c_string(data, string_pos, name)?;
+                names.push(NameEntry {
+                    name: name.as_str(),
+                    eat_index,
+                    rva,
+                });
+            }
+        }
+        Ok((names, string_pos))
+    }
+
+    /// Write the forwarder strings from `string_pos` on.
+    ///
+    /// Returns the sparse EAT. Each slot holds a function RVA, a forwarder
+    /// string RVA, or 0 for an empty slot.
+    fn write_forwarders(
+        &self,
+        data: &mut [u8],
+        table: &ExportTable,
+        layout: &ExportLayout,
+        mut string_pos: usize,
+    ) -> Result<Vec<u32>> {
+        let mut eat_entries = vec![0u32; layout.dimensions.function_count];
+        for export in &table.exports {
+            let slot = export
+                .ordinal
+                .checked_sub(table.directory.base)
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| eat_entries.get_mut(index))
+                .ok_or_else(|| Error::invalid_data_directory("export ordinal index overflow"))?;
+            *slot = match &export.address {
+                ExportAddress::Rva(rva) => *rva,
+                ExportAddress::Forwarder(fwd) => {
+                    let fwd_rva = checked_rva(self.base_rva, string_pos, "export forwarder")?;
+                    string_pos = put_c_string(data, string_pos, fwd)?;
+                    fwd_rva
+                }
+            };
+        }
+        Ok(eat_entries)
+    }
+}
+
+/// Byte offsets of the parts of a serialized export table.
+///
+/// The EAT starts at [`ExportDirectory::SIZE`]. The other parts follow in
+/// field order. Each offset is at most `total_size`.
+#[derive(Debug, Clone, Copy)]
+struct ExportLayout {
+    dimensions: ExportDimensions,
+    name_ptr_offset: usize,
+    ordinal_table_offset: usize,
+    dll_name_offset: usize,
+    strings_offset: usize,
+    total_size: usize,
+}
+
+/// Calculate the layout of the serialized export table with checked arithmetic.
+fn export_layout(table: &ExportTable) -> Result<ExportLayout> {
+    let dimensions = export_dimensions(table)?;
+    let eat_size = dimensions
+        .function_count
+        .checked_mul(4)
+        .ok_or_else(|| Error::invalid_data_directory("export address-table size overflow"))?;
+    let name_ptr_size = dimensions
+        .named_count
+        .checked_mul(4)
+        .ok_or_else(|| Error::invalid_data_directory("export name-table size overflow"))?;
+    let ordinal_size = dimensions
+        .named_count
+        .checked_mul(2)
+        .ok_or_else(|| Error::invalid_data_directory("export ordinal-table size overflow"))?;
+    let dll_name_size = checked_string_size(&table.dll_name, "export DLL name")?;
+
+    let mut names_size = 0usize;
+    let mut forwarders_size = 0usize;
+    for export in &table.exports {
+        for name in export.name.iter().chain(export.aliases.iter()) {
+            names_size = names_size
+                .checked_add(checked_string_size(name, "export name")?)
+                .ok_or_else(|| Error::invalid_data_directory("export names size overflow"))?;
+        }
+        if let ExportAddress::Forwarder(forwarder) = &export.address {
+            forwarders_size = forwarders_size
+                .checked_add(checked_string_size(forwarder, "export forwarder")?)
+                .ok_or_else(|| Error::invalid_data_directory("export forwarder size overflow"))?;
+        }
+    }
+
+    let overflow = || Error::invalid_data_directory("export table size overflow");
+    let name_ptr_offset = ExportDirectory::SIZE
+        .checked_add(eat_size)
+        .ok_or_else(overflow)?;
+    let ordinal_table_offset = name_ptr_offset
+        .checked_add(name_ptr_size)
+        .ok_or_else(overflow)?;
+    let dll_name_offset = ordinal_table_offset
+        .checked_add(ordinal_size)
+        .ok_or_else(overflow)?;
+    let strings_offset = dll_name_offset
+        .checked_add(dll_name_size)
+        .ok_or_else(overflow)?;
+    let total_size = strings_offset
+        .checked_add(names_size)
+        .and_then(|size| size.checked_add(forwarders_size))
+        .ok_or_else(overflow)?;
+    Ok(ExportLayout {
+        dimensions,
+        name_ptr_offset,
+        ordinal_table_offset,
+        dll_name_offset,
+        strings_offset,
+        total_size,
+    })
+}
+
+/// A function name that `ExportTableBuilder` wrote to the string area.
+#[derive(Debug, Clone, Copy)]
+struct NameEntry<'a> {
+    /// The function name.
+    name: &'a str,
+    /// The index of the function in the EAT.
+    eat_index: u16,
+    /// The RVA of the name string.
+    rva: u32,
+}
+
+/// Write the EAT, the name pointer table and the ordinal table.
+///
+/// Sort `names` by name before you call this function.
+fn write_tables(
+    data: &mut [u8],
+    layout: &ExportLayout,
+    eat_entries: &[u32],
+    names: &[NameEntry<'_>],
+) -> Result<()> {
+    let eat = table_region(data, ExportDirectory::SIZE, layout.name_ptr_offset)?;
+    for (slot, rva) in eat.as_chunks_mut::<4>().0.iter_mut().zip(eat_entries) {
+        *slot = rva.to_le_bytes();
+    }
+    let name_ptrs = table_region(data, layout.name_ptr_offset, layout.ordinal_table_offset)?;
+    for (slot, entry) in name_ptrs.as_chunks_mut::<4>().0.iter_mut().zip(names) {
+        *slot = entry.rva.to_le_bytes();
+    }
+    let ordinals = table_region(data, layout.ordinal_table_offset, layout.dll_name_offset)?;
+    for (slot, entry) in ordinals.as_chunks_mut::<2>().0.iter_mut().zip(names) {
+        *slot = entry.eat_index.to_le_bytes();
+    }
+    Ok(())
+}
+
+/// Get the bytes from `start` to `end` of `data`.
+///
+/// # Errors
+///
+/// Returns [`Error::buffer_too_small`] if the range is not in `data`.
+fn table_region(data: &mut [u8], start: usize, end: usize) -> Result<&mut [u8]> {
+    let len = data.len();
+    data.get_mut(start..end)
+        .ok_or_else(|| Error::buffer_too_small(end, len))
+}
+
+/// Copy `value` and a NUL terminator into `data` at `offset`.
+///
+/// Returns the offset after the terminator.
+///
+/// # Errors
+///
+/// Returns an error if the string does not fit in `data`.
+fn put_c_string(data: &mut [u8], offset: usize, value: &str) -> Result<usize> {
+    let end = offset
+        .checked_add(value.len())
+        .and_then(|end| end.checked_add(1))
+        .ok_or_else(|| Error::invalid_data_directory("export string offset overflow"))?;
+    let len = data.len();
+    let Some((terminator, text)) = data.get_mut(offset..end).and_then(<[u8]>::split_last_mut)
+    else {
+        return Err(Error::buffer_too_small(end, len));
+    };
+    text.copy_from_slice(value.as_bytes());
+    *terminator = 0;
+    Ok(end)
+}
+
+/// Read exactly `N` bytes at `rva` through `read_at_rva`.
+///
+/// # Errors
+///
+/// Returns an error if the bytes cannot be read.
+fn read_array_rva<const N: usize, F>(read_at_rva: &F, rva: u32, context: &str) -> Result<[u8; N]>
+where
+    F: Fn(u32, usize) -> Option<Vec<u8>>,
+{
+    let data = crate::parse_utils::read_exact_rva(read_at_rva, rva, N, context)?;
+    data.first_chunk::<N>()
+        .copied()
+        .ok_or_else(|| Error::buffer_too_small(N, data.len()))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -842,85 +974,4 @@ fn checked_rva(base: u32, offset: usize, context: &str) -> Result<u32> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_export_directory_size() {
-        assert_eq!(ExportDirectory::SIZE, 40);
-    }
-
-    #[test]
-    fn test_export_directory_roundtrip() {
-        let original = ExportDirectory {
-            characteristics: 0,
-            time_date_stamp: 0x1234_5678,
-            major_version: 1,
-            minor_version: 0,
-            name_rva: 0x1000,
-            base: 1,
-            number_of_functions: 10,
-            number_of_names: 8,
-            address_of_functions: 0x2000,
-            address_of_names: 0x3000,
-            address_of_name_ordinals: 0x4000,
-        };
-
-        let bytes = original.to_bytes();
-        let parsed = ExportDirectory::parse(&bytes).unwrap();
-        assert_eq!(original, parsed);
-    }
-
-    #[test]
-    fn test_export_table_builder_roundtrip() {
-        // Create an export table
-        let mut table = ExportTable::default();
-        table.set_dll_name("test.dll");
-        table.set_base(1);
-        table.add_export(Some("FunctionA"), 0x1000);
-        table.add_export(Some("FunctionB"), 0x2000);
-        table.add_export(None, 0x3000); // Export by ordinal only
-
-        assert_eq!(table.exports.len(), 3);
-        assert_eq!(table.dll_name, "test.dll");
-
-        // Build the section
-        let base_rva = 0x4000u32;
-        let builder = ExportTableBuilder::new(base_rva);
-        let size = ExportTableBuilder::calculate_size(&table);
-        assert!(size > 0);
-
-        let (data, export_size) = builder.build(&table);
-        assert_eq!(data.len(), size);
-        assert!(export_size > 0);
-
-        // Parse the built data back
-        let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {
-            if rva < base_rva {
-                return None;
-            }
-            let offset = (rva - base_rva) as usize;
-            if offset >= data.len() {
-                return None;
-            }
-            let available = (data.len() - offset).min(len);
-            Some(data[offset..offset + available].to_vec())
-        };
-
-        let parsed = ExportTable::parse(base_rva, export_size, read_fn).unwrap();
-        assert_eq!(parsed.dll_name, "test.dll");
-        assert_eq!(parsed.exports.len(), 3);
-
-        // Verify named exports
-        let func_a = parsed.find_by_name("FunctionA");
-        assert!(func_a.is_some());
-        if let ExportAddress::Rva(rva) = &func_a.unwrap().address {
-            assert_eq!(*rva, 0x1000);
-        } else {
-            panic!("Expected RVA export");
-        }
-
-        let func_b = parsed.find_by_name("FunctionB");
-        assert!(func_b.is_some());
-    }
-}
+mod tests;

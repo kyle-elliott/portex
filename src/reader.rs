@@ -228,15 +228,15 @@ impl<'a> SliceReader<'a> {
 
 impl ReadAt for SliceReader<'_> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let Ok(offset) = usize::try_from(offset) else {
-            return Ok(0); // Offset too large for this platform
+        let Some(src) = usize::try_from(offset)
+            .ok()
+            .and_then(|offset| self.data.get(offset..))
+        else {
+            return Ok(0); // Offset is at or past the end, or too large for this platform
         };
-        if offset >= self.data.len() {
-            return Ok(0);
-        }
-        let available = self.data.len() - offset;
-        let to_read = buf.len().min(available);
-        buf[..to_read].copy_from_slice(&self.data[offset..offset + to_read]);
+        let to_read = buf.len().min(src.len());
+        // `to_read` is not larger than `buf.len()` or `src.len()`.
+        buf[..to_read].copy_from_slice(&src[..to_read]);
         Ok(to_read)
     }
 
@@ -273,16 +273,7 @@ impl VecReader {
 
 impl ReadAt for VecReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let Ok(offset) = usize::try_from(offset) else {
-            return Ok(0); // Offset too large for this platform
-        };
-        if offset >= self.data.len() {
-            return Ok(0);
-        }
-        let available = self.data.len() - offset;
-        let to_read = buf.len().min(available);
-        buf[..to_read].copy_from_slice(&self.data[offset..offset + to_read]);
-        Ok(to_read)
+        SliceReader::new(&self.data).read_at(offset, buf)
     }
 
     fn size(&self) -> Option<u64> {
@@ -346,7 +337,9 @@ impl BaseAddressReader {
     ///
     /// For the lifetime of the reader, every range later requested through
     /// [`ReadAt::read_at`] (offset from `base`) must be readable and must not
-    /// be mutated concurrently.
+    /// be mutated concurrently. The only exception is a range whose end is
+    /// past the address space or more than `isize::MAX` bytes from `base`:
+    /// [`ReadAt::read_at`] rejects such a range and does not read memory.
     #[must_use]
     #[expect(
         unsafe_code,
@@ -377,9 +370,23 @@ impl ReadAt for BaseAddressReader {
             }
             return Ok(to_read);
         }
+        // An unbounded reader has no size to check against. Reject a range that
+        // `pointer::add` cannot reach or that wraps the address space. Such a
+        // range cannot be readable memory.
+        let max_offset = isize::MAX.unsigned_abs();
+        let fits = offset
+            .checked_add(buf.len())
+            .filter(|&end| end <= max_offset)
+            .and_then(|end| self.base.addr().checked_add(end))
+            .is_some();
+        if !fits {
+            return Err(Error::offset_out_of_bounds(offset, max_offset));
+        }
         // SAFETY: for unbounded readers the constructor's caller guaranteed that
-        // every requested range from `base` is readable; `buf` is a distinct
-        // exclusive borrow of exactly `buf.len()` bytes.
+        // every requested range from `base` is readable, except ranges that the
+        // check above rejects; `offset + buf.len()` is at most `isize::MAX` and
+        // does not wrap the address space. `buf` is a distinct exclusive borrow
+        // of exactly `buf.len()` bytes.
         #[expect(unsafe_code, reason = "reads caller-guaranteed in-process memory")]
         unsafe {
             core::ptr::copy_nonoverlapping(self.base.add(offset), buf.as_mut_ptr(), buf.len());
@@ -411,6 +418,7 @@ unsafe impl Sync for BaseAddressReader {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorKind;
 
     #[test]
     fn test_slice_reader() {
@@ -434,5 +442,27 @@ mod tests {
         let mut buf = [0u8; 4];
         let n = reader.read_at(0, &mut buf).unwrap();
         assert_eq!(n, 2);
+        assert_eq!(reader.read_at(2, &mut buf).unwrap(), 0);
+        assert_eq!(reader.read_at(u64::MAX, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_base_address_reader_rejects_range_past_address_space() {
+        let data = [0x4D, 0x5A, 0x90, 0x00];
+        #[expect(unsafe_code, reason = "constructs a reader over a local buffer")]
+        // SAFETY: the test reads in-range offsets of `data`, and offsets that
+        // `read_at` rejects before it reads memory.
+        let reader = unsafe { BaseAddressReader::from_base(data.as_ptr()) };
+        assert_eq!(reader.read_u16_at(0).unwrap(), 0x5A4D);
+
+        let end = u64::try_from(usize::MAX).unwrap();
+        let mut buf = [0u8; 4];
+        assert!(matches!(
+            reader.read_at(end, &mut buf).unwrap_err().kind(),
+            ErrorKind::OffsetOutOfBounds { .. }
+        ));
+        assert!(reader.read_exact_at(end - 1, &mut buf).is_err());
+        let past_isize = u64::try_from(isize::MAX.unsigned_abs()).unwrap();
+        assert!(reader.read_at(past_isize, &mut buf).is_err());
     }
 }

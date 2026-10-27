@@ -110,3 +110,76 @@ fn test_resource_builder_multiple_resources() {
     assert!(parsed.manifest().is_some());
     assert!(parsed.version_info().is_some());
 }
+
+#[test]
+fn test_resource_builder_named_round_trip() {
+    let named = |text: &str| ResourceId::Name(text.into());
+    let mut builder = ResourceBuilder::new();
+    builder
+        .add(ResourceEntry {
+            type_id: named("MYTYPE"),
+            name: named("FIRST"),
+            language: 0x0409,
+            code_page: 1252,
+            data: vec![1, 2, 3],
+        })
+        .add(ResourceEntry {
+            type_id: named("MYTYPE"),
+            name: ResourceId::Id(7),
+            language: 0x0407,
+            code_page: 0,
+            data: vec![4; 9],
+        })
+        .add(ResourceEntry {
+            type_id: ResourceId::Id(10),
+            name: named("Ünïcode"),
+            language: 0x0409,
+            code_page: 0,
+            data: vec![5; 16],
+        })
+        .add(ResourceEntry::new(10, 1, 0x0409, vec![6]))
+        .add(ResourceEntry::new(10, 1, 0x0407, vec![7, 8]));
+
+    let base_rva = 0x5000;
+    let (data, size) = builder.try_build(base_rva).unwrap();
+    assert_eq!(data.len(), usize::try_from(size).unwrap());
+    assert_eq!(data.len(), builder.try_calculate_size().unwrap());
+
+    let read_at_rva = |rva: u32, len: usize| {
+        let start = usize::try_from(rva.checked_sub(base_rva)?).ok()?;
+        data.get(start..start.checked_add(len)?).map(<[u8]>::to_vec)
+    };
+    let directory = ResourceDirectory::parse_with_data(base_rva, size, read_at_rva).unwrap();
+
+    // Named entries come first in each directory. Languages are sorted.
+    let summary: Vec<_> = directory
+        .resources
+        .iter()
+        .map(|resource| {
+            (
+                resource.type_id.clone(),
+                resource.name.clone(),
+                resource.language,
+                resource.code_page,
+                resource.data.clone().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (named("MYTYPE"), named("FIRST"), 0x0409, 1252, vec![1, 2, 3]),
+            (named("MYTYPE"), ResourceId::Id(7), 0x0407, 0, vec![4; 9]),
+            (ResourceId::Id(10), named("Ünïcode"), 0x0409, 0, vec![5; 16]),
+            (ResourceId::Id(10), ResourceId::Id(1), 0x0407, 0, vec![7, 8]),
+            (ResourceId::Id(10), ResourceId::Id(1), 0x0409, 0, vec![6]),
+        ]
+    );
+    // Each payload starts on an 8-byte boundary.
+    assert!(
+        directory
+            .resources
+            .iter()
+            .all(|resource| resource.data_rva % 8 == 0)
+    );
+}

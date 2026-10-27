@@ -324,15 +324,18 @@ impl PeFile {
                 ));
             }
             let start = old_range.start;
+            let end = start
+                .checked_add(certificate_data.len())
+                .ok_or_else(|| Error::invalid_data_directory("overlay size overflow"))?;
             self.overlay
                 .splice(old_range, certificate_data.iter().copied());
-            start..start + certificate_data.len()
+            start..end
         } else {
             let start = align_up_usize(self.overlay.len(), 8)
                 .ok_or_else(|| Error::invalid_data_directory("overlay size overflow"))?;
             self.overlay.resize(start, 0);
             self.overlay.extend_from_slice(&certificate_data);
-            start..start + certificate_data.len()
+            start..self.overlay.len()
         };
 
         self.certificate_range = Some(range);
@@ -519,7 +522,7 @@ impl RawLayoutFingerprint {
             .map_err(|_| Error::invalid_section("e_lfanew is negative"))?;
         Ok(Self {
             pe_offset,
-            optional_header_size: image.coff_header.size_of_optional_header as usize,
+            optional_header_size: usize::from(image.coff_header.size_of_optional_header),
             size_of_headers: image.optional_header.size_of_headers() as usize,
             sections: image
                 .sections
@@ -549,7 +552,7 @@ fn collect_preserved_regions(
         .checked_add(image.optional_header.size())
         .ok_or_else(|| Error::invalid_section("optional-header size overflow"))?;
     let declared_optional_end = optional_start
-        .checked_add(image.coff_header.size_of_optional_header as usize)
+        .checked_add(usize::from(image.coff_header.size_of_optional_header))
         .ok_or_else(|| Error::invalid_section("optional-header size overflow"))?;
     let section_table_end = declared_optional_end
         .checked_add(

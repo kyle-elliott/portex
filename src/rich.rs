@@ -28,9 +28,10 @@ impl RichEntry {
     /// build number in the low 16 bits).
     #[must_use]
     pub fn from_comp_id(comp_id: u32, use_count: u32) -> Self {
+        let [build_lo, build_hi, product_lo, product_hi] = comp_id.to_le_bytes();
         Self {
-            product_id: (comp_id >> 16) as u16,
-            build_number: (comp_id & 0xFFFF) as u16,
+            product_id: u16::from_le_bytes([product_lo, product_hi]),
+            build_number: u16::from_le_bytes([build_lo, build_hi]),
             use_count,
         }
     }
@@ -97,57 +98,33 @@ impl RichHeader {
     #[must_use]
     pub fn parse(data: &[u8]) -> Option<Self> {
         // A Rich header lives between the fixed DOS header and the PE header.
-        if data.len() < 0x40 {
-            return None;
-        }
-
-        // Get PE offset from DOS header
-        let pe_offset =
-            u32::from_le_bytes([data[0x3C], data[0x3D], data[0x3E], data[0x3F]]) as usize;
+        // Get the PE offset (`e_lfanew`) from the DOS header.
+        let pe_offset = usize::try_from(read_u32(data, 0x3C)?).ok()?;
         if pe_offset.checked_add(4)? > data.len() || pe_offset < 0x40 + 24 {
             return None;
         }
 
         // Search backwards for the literal "Rich" marker followed by its XOR
         // key. Older Portex versions incorrectly XORed the marker, so accept
-        // that spelling while parsing but never emit it.
-        let search_area = &data[0x40..pe_offset];
-        if search_area.len() < 8 {
-            return None;
-        }
-        for i in (0..=search_area.len() - 8).rev() {
-            let value = u32::from_le_bytes([
-                search_area[i],
-                search_area[i + 1],
-                search_area[i + 2],
-                search_area[i + 3],
-            ]);
-
-            let key = u32::from_le_bytes([
-                search_area[i + 4],
-                search_area[i + 5],
-                search_area[i + 6],
-                search_area[i + 7],
-            ]);
+        // that spelling while parsing but never emit it. The marker and the
+        // key must end at or before the PE header, and at least the 16-byte
+        // `DanS` block must come before them.
+        for rich_offset in (0x40 + 16..=pe_offset.checked_sub(8)?).rev() {
+            let value = read_u32(data, rich_offset)?;
+            let key = read_u32(data, rich_offset.checked_add(4)?)?;
             if value != RICH_MAGIC && value ^ key != RICH_MAGIC {
                 continue;
             }
-            let rich_offset = i + 0x40;
-            if rich_offset < 0x40 + 16 {
-                continue;
-            }
-            for start_offset in (0x40..=rich_offset - 16).rev() {
-                let encoded_dans = u32::from_le_bytes([
-                    data[start_offset],
-                    data[start_offset + 1],
-                    data[start_offset + 2],
-                    data[start_offset + 3],
-                ]);
-                let entries_size = rich_offset - start_offset - 16;
-                if encoded_dans ^ key != DANS_MAGIC || !entries_size.is_multiple_of(8) {
+            for start_offset in (0x40..=rich_offset.checked_sub(16)?).rev() {
+                let block = data.get(start_offset..rich_offset)?;
+                let (dans, rest) = block.split_first_chunk::<4>()?;
+                let (padding, entry_bytes) = rest.split_first_chunk::<12>()?;
+                if u32::from_le_bytes(*dans) ^ key != DANS_MAGIC
+                    || !entry_bytes.len().is_multiple_of(8)
+                {
                     continue;
                 }
-                if data[start_offset + 4..start_offset + 16]
+                if padding
                     .as_chunks::<4>()
                     .0
                     .iter()
@@ -156,11 +133,11 @@ impl RichHeader {
                     continue;
                 }
 
-                let mut entries = Vec::with_capacity(entries_size / 8);
-                for chunk in data[start_offset + 16..rich_offset].as_chunks::<8>().0 {
-                    let comp_id =
-                        u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) ^ key;
-                    let count = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]) ^ key;
+                let chunks = entry_bytes.as_chunks::<8>().0;
+                let mut entries = Vec::with_capacity(chunks.len());
+                for &[c0, c1, c2, c3, n0, n1, n2, n3] in chunks {
+                    let comp_id = u32::from_le_bytes([c0, c1, c2, c3]) ^ key;
+                    let count = u32::from_le_bytes([n0, n1, n2, n3]) ^ key;
                     if comp_id != 0 || count != 0 {
                         entries.push(RichEntry::from_comp_id(comp_id, count));
                     }
@@ -169,7 +146,7 @@ impl RichHeader {
                     key,
                     entries,
                     offset: start_offset,
-                    size: rich_offset + 8 - start_offset,
+                    size: block.len().checked_add(8)?,
                 });
             }
         }
@@ -200,29 +177,24 @@ impl RichHeader {
             .checked_mul(8)
             .and_then(|size| size.checked_add(24))
             .ok_or_else(|| Error::generic("Rich-header size overflow"))?;
-        let mut buf = vec![0u8; size];
-
+        let mut buf = Vec::with_capacity(size);
         let key = self.key;
 
-        // DanS marker (XORed)
-        buf[0..4].copy_from_slice(&(DANS_MAGIC ^ key).to_le_bytes());
-
-        // Padding (3 dwords, all XORed with key)
-        buf[4..8].copy_from_slice(&key.to_le_bytes());
-        buf[8..12].copy_from_slice(&key.to_le_bytes());
-        buf[12..16].copy_from_slice(&key.to_le_bytes());
+        // DanS marker and padding (3 dwords), all XORed with the key.
+        buf.extend_from_slice(&(DANS_MAGIC ^ key).to_le_bytes());
+        for _ in 0..3 {
+            buf.extend_from_slice(&key.to_le_bytes());
+        }
 
         // Entries
-        for (i, entry) in self.entries.iter().enumerate() {
-            let offset = 16 + i * 8;
-            buf[offset..offset + 4].copy_from_slice(&(entry.to_comp_id() ^ key).to_le_bytes());
-            buf[offset + 4..offset + 8].copy_from_slice(&(entry.use_count ^ key).to_le_bytes());
+        for entry in &self.entries {
+            buf.extend_from_slice(&(entry.to_comp_id() ^ key).to_le_bytes());
+            buf.extend_from_slice(&(entry.use_count ^ key).to_le_bytes());
         }
 
         // Rich marker
-        let rich_offset = 16 + self.entries.len() * 8;
-        buf[rich_offset..rich_offset + 4].copy_from_slice(&RICH_MAGIC.to_le_bytes());
-        buf[rich_offset + 4..rich_offset + 8].copy_from_slice(&key.to_le_bytes());
+        buf.extend_from_slice(&RICH_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&key.to_le_bytes());
 
         Ok(buf)
     }
@@ -399,16 +371,36 @@ impl RichBuilder {
     }
 
     /// Build into a `RichHeader` struct with a specific key.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_into_header`] fails.
     #[must_use]
     pub fn into_header(self, key: u32) -> RichHeader {
-        let size = self.calculate_size();
-        RichHeader {
+        self.try_into_header(key)
+            .expect("Rich-header size overflow: use try_into_header()")
+    }
+
+    /// Build into a `RichHeader` struct with a specific key.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::try_calculate_size`].
+    pub fn try_into_header(self, key: u32) -> Result<RichHeader> {
+        let size = self.try_calculate_size()?;
+        Ok(RichHeader {
             key,
             entries: self.entries,
             offset: 0,
             size,
-        }
+        })
     }
+}
+
+/// Read a little-endian `u32` at `offset`, or return `None` if `data` is too short.
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    let bytes = data.get(offset..)?.first_chunk::<4>()?;
+    Some(u32::from_le_bytes(*bytes))
 }
 
 #[cfg(test)]

@@ -205,9 +205,9 @@ impl CoffHeader {
     ///
     /// Returns a buffer-too-small error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::SIZE {
+        let Some(data) = data.first_chunk::<{ Self::SIZE }>() else {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
-        }
+        };
 
         Ok(Self {
             machine: u16::from_le_bytes([data[0], data[1]]),

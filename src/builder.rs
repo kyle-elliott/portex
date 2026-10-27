@@ -376,12 +376,10 @@ impl PeBuilder {
 
     fn default_dos_stub() -> Vec<u8> {
         // Minimal DOS stub: "This program cannot be run in DOS mode.\r\n$"
-        // Padded to reach PE header at 0x80
-        let mut stub = vec![0u8; 64]; // From 0x40 to 0x80
-        // Standard DOS stub message (simplified)
+        // Padded with zeros to 64 bytes (0x40 to 0x80) to reach the PE header at 0x80.
         let msg = b"\x0e\x1f\xba\x0e\x00\xb4\x09\xcd\x21\xb8\x01\x4c\xcd\x21This program cannot be run in DOS mode.\r\r\n$";
-        let copy_len = msg.len().min(stub.len());
-        stub[..copy_len].copy_from_slice(&msg[..copy_len]);
+        let mut stub = msg.to_vec();
+        stub.resize(64, 0);
         stub
     }
 }

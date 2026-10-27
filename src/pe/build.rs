@@ -237,7 +237,7 @@ impl PeImage {
             .checked_add(CoffHeader::SIZE)
             .ok_or_else(|| Error::invalid_section("optional-header offset overflow"))?;
         let optional_size = self.optional_header.size();
-        let declared_optional_size = self.coff_header.size_of_optional_header as usize;
+        let declared_optional_size = usize::from(self.coff_header.size_of_optional_header);
         if optional_size > declared_optional_size {
             return Err(Error::invalid_section(format!(
                 "optional header needs {optional_size} bytes, but COFF declares {declared_optional_size}"
@@ -255,25 +255,20 @@ impl PeImage {
             .checked_add(section_table_size)
             .ok_or_else(|| Error::invalid_section("header size overflow"))?;
 
+        // Each range below ends at or before `header_end`, which is `output.len()`.
         let mut output = try_zeroed_buffer(header_end, "PE headers")?;
         self.dos_header.write(&mut output[..DosHeader::SIZE])?;
         output[DosHeader::SIZE..stub_end].copy_from_slice(&self.dos_stub);
-        output[pe_offset..pe_offset + 4].copy_from_slice(&PE_SIGNATURE.to_le_bytes());
+        output[pe_offset..coff_offset].copy_from_slice(&PE_SIGNATURE.to_le_bytes());
         self.coff_header
-            .write(&mut output[coff_offset..coff_offset + CoffHeader::SIZE])?;
+            .write(&mut output[coff_offset..optional_offset])?;
         self.optional_header
-            .write(&mut output[optional_offset..optional_offset + optional_size])?;
+            .write(&mut output[optional_offset..sections_offset])?;
 
-        for (index, section) in self.sections.iter().enumerate() {
-            let relative = index
-                .checked_mul(SectionHeader::SIZE)
-                .ok_or_else(|| Error::invalid_section("section-header offset overflow"))?;
-            let offset = sections_offset
-                .checked_add(relative)
-                .ok_or_else(|| Error::invalid_section("section-header offset overflow"))?;
-            section
-                .header
-                .write(&mut output[offset..offset + SectionHeader::SIZE])?;
+        let (section_table, _) =
+            output[sections_offset..].as_chunks_mut::<{ SectionHeader::SIZE }>();
+        for (section, slot) in self.sections.iter().zip(section_table) {
+            section.header.write(slot)?;
         }
 
         Ok(output)
@@ -298,7 +293,7 @@ impl PeImage {
         let mut output = try_zeroed_buffer(file_size, "raw PE image")?;
         output[..headers.len()].copy_from_slice(&headers);
 
-        if self.coff_header.number_of_sections as usize != self.sections.len() {
+        if usize::from(self.coff_header.number_of_sections) != self.sections.len() {
             return Err(Error::invalid_section(format!(
                 "COFF declares {} sections, but {} section records are present",
                 self.coff_header.number_of_sections,
