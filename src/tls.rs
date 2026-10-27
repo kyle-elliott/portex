@@ -28,7 +28,7 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// IMAGE_TLS_DIRECTORY32 - 24 bytes
+/// `IMAGE_TLS_DIRECTORY32`: the 24-byte PE32 TLS directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TlsDirectory32 {
     /// Starting address of the TLS template (VA).
@@ -46,8 +46,14 @@ pub struct TlsDirectory32 {
 }
 
 impl TlsDirectory32 {
+    /// Size of an encoded `IMAGE_TLS_DIRECTORY32`, in bytes.
     pub const SIZE: usize = 24;
 
+    /// Parse an `IMAGE_TLS_DIRECTORY32` from little-endian bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
@@ -63,7 +69,9 @@ impl TlsDirectory32 {
         })
     }
 
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+    /// Encode the directory into its 24-byte little-endian representation.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         buf[0..4].copy_from_slice(&self.start_address_of_raw_data.to_le_bytes());
         buf[4..8].copy_from_slice(&self.end_address_of_raw_data.to_le_bytes());
@@ -75,7 +83,7 @@ impl TlsDirectory32 {
     }
 }
 
-/// IMAGE_TLS_DIRECTORY64 - 40 bytes
+/// `IMAGE_TLS_DIRECTORY64`: the 40-byte PE32+ TLS directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TlsDirectory64 {
     /// Starting address of the TLS template (VA).
@@ -93,8 +101,14 @@ pub struct TlsDirectory64 {
 }
 
 impl TlsDirectory64 {
+    /// Size of an encoded `IMAGE_TLS_DIRECTORY64`, in bytes.
     pub const SIZE: usize = 40;
 
+    /// Parse an `IMAGE_TLS_DIRECTORY64` from little-endian bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
@@ -118,7 +132,9 @@ impl TlsDirectory64 {
         })
     }
 
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+    /// Encode the directory into its 40-byte little-endian representation.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         buf[0..8].copy_from_slice(&self.start_address_of_raw_data.to_le_bytes());
         buf[8..16].copy_from_slice(&self.end_address_of_raw_data.to_le_bytes());
@@ -133,12 +149,18 @@ impl TlsDirectory64 {
 /// TLS Directory (either 32 or 64-bit).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TlsDirectory {
+    /// PE32 directory (`IMAGE_TLS_DIRECTORY32`).
     Tls32(TlsDirectory32),
+    /// PE32+ directory (`IMAGE_TLS_DIRECTORY64`).
     Tls64(TlsDirectory64),
 }
 
 impl TlsDirectory {
     /// Parse from bytes, selecting 32 or 64-bit based on flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data` is shorter than the selected directory size.
     pub fn parse(data: &[u8], is_64bit: bool) -> Result<Self> {
         if is_64bit {
             Ok(Self::Tls64(TlsDirectory64::parse(data)?))
@@ -148,6 +170,7 @@ impl TlsDirectory {
     }
 
     /// Serialize to bytes.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
             Self::Tls32(tls) => tls.to_bytes().to_vec(),
@@ -156,6 +179,7 @@ impl TlsDirectory {
     }
 
     /// Get the size of the TLS directory.
+    #[must_use]
     pub fn size(&self) -> usize {
         match self {
             Self::Tls32(_) => TlsDirectory32::SIZE,
@@ -164,14 +188,16 @@ impl TlsDirectory {
     }
 
     /// Get the callbacks VA (Virtual Address).
+    #[must_use]
     pub fn callbacks_va(&self) -> u64 {
         match self {
-            Self::Tls32(tls) => tls.address_of_callbacks as u64,
+            Self::Tls32(tls) => u64::from(tls.address_of_callbacks),
             Self::Tls64(tls) => tls.address_of_callbacks,
         }
     }
 
     /// Check if TLS has callbacks (non-zero address).
+    #[must_use]
     pub fn has_callbacks(&self) -> bool {
         self.callbacks_va() != 0
     }
@@ -188,10 +214,23 @@ pub struct TlsInfo {
     pub image_base: u64,
 }
 
+/// Upper bound on TLS callback-array entries scanned while looking for the
+/// null terminator.
+const MAX_TLS_CALLBACKS: usize = 65_536;
+
 impl TlsInfo {
     /// Parse TLS information from a PE.
     /// `tls_rva` and `tls_size` come from the data directory.
     /// `image_base` is needed to convert VAs to RVAs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `tls_size` is smaller than the directory structure,
+    /// if the directory or a callback-array slot cannot be read through
+    /// `read_at_rva`, if the raw-data, index, or callback VAs lie below
+    /// `image_base` or outside the 32-bit RVA space, if the raw-data range is
+    /// half-zero or reversed, or if the callback array has no null terminator
+    /// within 65,536 entries.
     pub fn parse<F>(
         tls_rva: u32,
         tls_size: u32,
@@ -207,125 +246,20 @@ impl TlsInfo {
         } else {
             TlsDirectory32::SIZE
         };
-        if tls_size < dir_size as u32 {
+        if usize::try_from(tls_size).is_ok_and(|size| size < dir_size) {
             return Err(Error::invalid_data_directory(format!(
-                "TLS directory size {} is smaller than {}",
-                tls_size, dir_size
+                "TLS directory size {tls_size} is smaller than {dir_size}"
             )));
         }
         let data = read_at_rva(tls_rva, dir_size).ok_or(Error::invalid_rva(tls_rva))?;
         let directory = TlsDirectory::parse(&data, is_64bit)?;
+        validate_directory_vas(&directory, image_base)?;
 
-        let (raw_start, raw_end, index_va) = match &directory {
-            TlsDirectory::Tls32(directory) => (
-                u64::from(directory.start_address_of_raw_data),
-                u64::from(directory.end_address_of_raw_data),
-                u64::from(directory.address_of_index),
-            ),
-            TlsDirectory::Tls64(directory) => (
-                directory.start_address_of_raw_data,
-                directory.end_address_of_raw_data,
-                directory.address_of_index,
-            ),
+        let callback_rvas = if directory.has_callbacks() {
+            read_callback_rvas(directory.callbacks_va(), image_base, is_64bit, &read_at_rva)?
+        } else {
+            Vec::new()
         };
-        if (raw_start == 0) != (raw_end == 0) {
-            return Err(Error::invalid_data_directory(
-                "TLS raw-data start and end must either both be zero or both be VAs",
-            ));
-        }
-        if raw_start != 0 {
-            let start_rva = va_to_rva(raw_start, image_base)?;
-            let end_rva = va_to_rva(raw_end, image_base)?;
-            if end_rva < start_rva {
-                return Err(Error::invalid_data_directory(
-                    "TLS raw-data end precedes its start",
-                ));
-            }
-        }
-        if index_va != 0 {
-            va_to_rva(index_va, image_base)?;
-        }
-
-        // Parse callbacks if present
-        let mut callback_rvas = Vec::new();
-        if directory.has_callbacks() {
-            let callbacks_va = directory.callbacks_va();
-            if callbacks_va >= image_base {
-                let callbacks_rva = callbacks_va
-                    .checked_sub(image_base)
-                    .and_then(|rva| u32::try_from(rva).ok())
-                    .ok_or_else(|| {
-                        Error::invalid_data_directory(format!(
-                            "TLS callback array VA {:#x} is outside image base {:#x}",
-                            callbacks_va, image_base
-                        ))
-                    })?;
-                let ptr_size = if is_64bit { 8 } else { 4 };
-                let mut offset = 0u32;
-
-                for _ in 0..65_536 {
-                    let callback_pointer_rva =
-                        callbacks_rva.checked_add(offset).ok_or_else(|| {
-                            Error::invalid_data_directory("TLS callback-array RVA overflow")
-                        })?;
-                    let ptr_data = read_at_rva(callback_pointer_rva, ptr_size)
-                        .ok_or(Error::invalid_rva(callback_pointer_rva))?;
-                    if ptr_data.len() < ptr_size {
-                        return Err(Error::buffer_too_small(ptr_size, ptr_data.len()));
-                    }
-
-                    let callback_va = if is_64bit {
-                        u64::from_le_bytes([
-                            ptr_data[0],
-                            ptr_data[1],
-                            ptr_data[2],
-                            ptr_data[3],
-                            ptr_data[4],
-                            ptr_data[5],
-                            ptr_data[6],
-                            ptr_data[7],
-                        ])
-                    } else {
-                        u32::from_le_bytes([ptr_data[0], ptr_data[1], ptr_data[2], ptr_data[3]])
-                            as u64
-                    };
-
-                    // Null terminator
-                    if callback_va == 0 {
-                        break;
-                    }
-
-                    // Convert VA to RVA
-                    let callback_rva = callback_va.checked_sub(image_base).ok_or_else(|| {
-                        Error::invalid_data_directory(format!(
-                            "TLS callback VA {:#x} is below image base {:#x}",
-                            callback_va, image_base
-                        ))
-                    })?;
-                    let callback_rva = u32::try_from(callback_rva).map_err(|_| {
-                        Error::invalid_data_directory(format!(
-                            "TLS callback VA {:#x} is outside the 32-bit RVA space",
-                            callback_va
-                        ))
-                    })?;
-                    callback_rvas.push(u64::from(callback_rva));
-                    offset = offset.checked_add(ptr_size as u32).ok_or_else(|| {
-                        Error::invalid_data_directory("TLS callback-array size overflow")
-                    })?;
-                }
-
-                if callback_rvas.len() == 65_536 {
-                    return Err(Error::invalid_data_directory(
-                        "TLS callback array is missing a terminator",
-                    ));
-                }
-            } else {
-                return Err(Error::invalid_data_directory(format!(
-                    "TLS callback array VA {:#x} is below image base {:#x}",
-                    callbacks_va, image_base
-                )));
-            }
-        }
 
         Ok(Self {
             directory: Some(directory),
@@ -333,6 +267,127 @@ impl TlsInfo {
             image_base,
         })
     }
+}
+
+/// Check that the raw-data range and index VAs of `directory` map to RVAs.
+fn validate_directory_vas(directory: &TlsDirectory, image_base: u64) -> Result<()> {
+    let (raw_start, raw_end, index_va) = match directory {
+        TlsDirectory::Tls32(directory) => (
+            u64::from(directory.start_address_of_raw_data),
+            u64::from(directory.end_address_of_raw_data),
+            u64::from(directory.address_of_index),
+        ),
+        TlsDirectory::Tls64(directory) => (
+            directory.start_address_of_raw_data,
+            directory.end_address_of_raw_data,
+            directory.address_of_index,
+        ),
+    };
+    if (raw_start == 0) != (raw_end == 0) {
+        return Err(Error::invalid_data_directory(
+            "TLS raw-data start and end must either both be zero or both be VAs",
+        ));
+    }
+    if raw_start != 0 {
+        let start_rva = va_to_rva(raw_start, image_base)?;
+        let end_rva = va_to_rva(raw_end, image_base)?;
+        if end_rva < start_rva {
+            return Err(Error::invalid_data_directory(
+                "TLS raw-data end precedes its start",
+            ));
+        }
+    }
+    if index_va != 0 {
+        va_to_rva(index_va, image_base)?;
+    }
+    Ok(())
+}
+
+/// Read the null-terminated TLS callback array at `array_va` and convert each
+/// callback VA to an RVA.
+fn read_callback_rvas<F>(
+    array_va: u64,
+    image_base: u64,
+    is_64bit: bool,
+    read_at_rva: &F,
+) -> Result<Vec<u64>>
+where
+    F: Fn(u32, usize) -> Option<Vec<u8>>,
+{
+    if array_va < image_base {
+        return Err(Error::invalid_data_directory(format!(
+            "TLS callback array VA {array_va:#x} is below image base {image_base:#x}"
+        )));
+    }
+    let first_slot_rva = array_va
+        .checked_sub(image_base)
+        .and_then(|rva| u32::try_from(rva).ok())
+        .ok_or_else(|| {
+            Error::invalid_data_directory(format!(
+                "TLS callback array VA {array_va:#x} is outside image base {image_base:#x}"
+            ))
+        })?;
+    let (ptr_size, ptr_stride): (usize, u32) = if is_64bit { (8, 8) } else { (4, 4) };
+    let mut callback_rvas = Vec::new();
+    let mut offset = 0u32;
+
+    for _ in 0..MAX_TLS_CALLBACKS {
+        let slot_rva = first_slot_rva
+            .checked_add(offset)
+            .ok_or_else(|| Error::invalid_data_directory("TLS callback-array RVA overflow"))?;
+        let ptr_data = read_at_rva(slot_rva, ptr_size).ok_or(Error::invalid_rva(slot_rva))?;
+        if ptr_data.len() < ptr_size {
+            return Err(Error::buffer_too_small(ptr_size, ptr_data.len()));
+        }
+
+        let callback_address = if is_64bit {
+            u64::from_le_bytes([
+                ptr_data[0],
+                ptr_data[1],
+                ptr_data[2],
+                ptr_data[3],
+                ptr_data[4],
+                ptr_data[5],
+                ptr_data[6],
+                ptr_data[7],
+            ])
+        } else {
+            u64::from(u32::from_le_bytes([
+                ptr_data[0],
+                ptr_data[1],
+                ptr_data[2],
+                ptr_data[3],
+            ]))
+        };
+
+        // Null terminator
+        if callback_address == 0 {
+            break;
+        }
+
+        // Convert VA to RVA
+        let callback_rva = callback_address.checked_sub(image_base).ok_or_else(|| {
+            Error::invalid_data_directory(format!(
+                "TLS callback VA {callback_address:#x} is below image base {image_base:#x}"
+            ))
+        })?;
+        let callback_rva = u32::try_from(callback_rva).map_err(|_| {
+            Error::invalid_data_directory(format!(
+                "TLS callback VA {callback_address:#x} is outside the 32-bit RVA space"
+            ))
+        })?;
+        callback_rvas.push(u64::from(callback_rva));
+        offset = offset
+            .checked_add(ptr_stride)
+            .ok_or_else(|| Error::invalid_data_directory("TLS callback-array size overflow"))?;
+    }
+
+    if callback_rvas.len() == MAX_TLS_CALLBACKS {
+        return Err(Error::invalid_data_directory(
+            "TLS callback array is missing a terminator",
+        ));
+    }
+    Ok(callback_rvas)
 }
 
 /// Builder for TLS directories.
@@ -346,7 +401,7 @@ impl TlsInfo {
 /// use portex::tls::TlsBuilder;
 ///
 /// // Create a TLS builder for 64-bit PE
-/// let builder = TlsBuilder::new(0x3000, 0x140000000, true);
+/// let builder = TlsBuilder::new(0x3000, 0x0001_4000_0000, true);
 ///
 /// // Build with TLS data region and no callbacks
 /// let (data, dir_size) = builder.build(0x1000, 0x1100, &[]);
@@ -362,6 +417,21 @@ pub struct TlsBuilder {
     is_64bit: bool,
 }
 
+/// Byte layout of the TLS block emitted by [`TlsBuilder`]:
+/// `[directory][TLS index (4 bytes)][padding][null-terminated callback array]`.
+struct TlsLayout {
+    /// Size of the TLS directory structure, which is also the index offset.
+    dir_size: usize,
+    /// Pointer-aligned offset of the callback array.
+    callbacks_offset: usize,
+    /// Total size of the block.
+    total_size: usize,
+    /// `dir_size` as stored in the data directory.
+    dir_size_u32: u32,
+    /// `total_size` as a 32-bit length.
+    total_size_u32: u32,
+}
+
 impl TlsBuilder {
     /// Create a new TLS builder.
     ///
@@ -369,6 +439,7 @@ impl TlsBuilder {
     /// * `base_rva` - RVA where the TLS data will be placed
     /// * `image_base` - Image base address for VA calculations
     /// * `is_64bit` - Whether the target PE is 64-bit
+    #[must_use]
     pub fn new(base_rva: u32, image_base: u64, is_64bit: bool) -> Self {
         Self {
             base_rva,
@@ -384,9 +455,14 @@ impl TlsBuilder {
     /// * `raw_data_end_rva` - RVA of the TLS raw data end
     /// * `callback_rvas` - List of callback function RVAs
     ///
-    /// Returns (data, directory_size) where:
+    /// Returns (`data`, `directory_size`) where:
     /// - `data` is the raw bytes to write to the section
     /// - `directory_size` is the size of the TLS directory (for data directory)
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_build`] fails; use it for fallible serialization.
+    #[must_use]
     pub fn build(
         &self,
         raw_data_start_rva: u32,
@@ -398,6 +474,12 @@ impl TlsBuilder {
     }
 
     /// Build TLS data with checked VA/RVA and size arithmetic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the raw-data range is reversed or half-zero, if a
+    /// callback RVA exceeds `u32`, if the block size or any RVA/VA computation
+    /// overflows, or if a PE32 VA does not fit in 32 bits.
     pub fn try_build(
         &self,
         raw_data_start_rva: u32,
@@ -414,44 +496,13 @@ impl TlsBuilder {
                 "TLS raw-data start and end must either both be zero or both be RVAs",
             ));
         }
-        let ptr_size = if self.is_64bit { 8 } else { 4 };
-        let dir_size = if self.is_64bit {
-            TlsDirectory64::SIZE
-        } else {
-            TlsDirectory32::SIZE
-        };
-
-        // Layout:
-        // [TlsDirectory (24 or 40 bytes)]
-        // [TLS Index (4 bytes)]
-        // [Callbacks array (ptr_size * (callback_rvas.len() + 1))] - null terminated
-
-        let index_offset = dir_size;
-        let after_index = index_offset
-            .checked_add(4)
-            .ok_or_else(|| Error::invalid_data_directory("TLS index offset overflow"))?;
-        let callbacks_offset = after_index
-            .checked_add(ptr_size - 1)
-            .map(|offset| offset & !(ptr_size - 1))
-            .ok_or_else(|| Error::invalid_data_directory("TLS callback alignment overflow"))?;
-        let callbacks_size = callback_rvas
-            .len()
-            .checked_add(1)
-            .and_then(|count| count.checked_mul(ptr_size))
-            .ok_or_else(|| Error::invalid_data_directory("TLS callback-array size overflow"))?;
-        let total_size = callbacks_offset
-            .checked_add(callbacks_size)
-            .ok_or_else(|| Error::invalid_data_directory("TLS data size overflow"))?;
-        let total_size_u32 = u32::try_from(total_size)
-            .map_err(|_| Error::invalid_data_directory("TLS data exceeds u32"))?;
+        let layout = self.layout(callback_rvas.len())?;
         self.base_rva
-            .checked_add(total_size_u32)
+            .checked_add(layout.total_size_u32)
             .ok_or_else(|| Error::invalid_data_directory("TLS data RVA range overflow"))?;
 
-        let mut data = Vec::with_capacity(total_size);
-
         // Convert RVAs to VAs
-        let (raw_data_start_va, raw_data_end_va) = if raw_data_start_rva == 0 {
+        let (raw_start_address, raw_end_address) = if raw_data_start_rva == 0 {
             (0, 0)
         } else {
             (
@@ -467,94 +518,140 @@ impl TlsBuilder {
                 )?,
             )
         };
-        let index_rva = self
-            .base_rva
-            .checked_add(
-                u32::try_from(index_offset)
-                    .map_err(|_| Error::invalid_data_directory("TLS index offset exceeds u32"))?,
-            )
-            .ok_or_else(|| Error::invalid_data_directory("TLS index RVA overflow"))?;
-        let index_va = checked_va(self.image_base, u64::from(index_rva), "TLS index")?;
-        let callbacks_va = if callback_rvas.is_empty() {
+        let index_address = self.block_va(layout.dir_size, "TLS index")?;
+        let array_address = if callback_rvas.is_empty() {
             0 // No callbacks
         } else {
-            let callbacks_rva = self
-                .base_rva
-                .checked_add(u32::try_from(callbacks_offset).map_err(|_| {
-                    Error::invalid_data_directory("TLS callback offset exceeds u32")
-                })?)
-                .ok_or_else(|| Error::invalid_data_directory("TLS callback RVA overflow"))?;
-            checked_va(
-                self.image_base,
-                u64::from(callbacks_rva),
-                "TLS callback array",
-            )?
+            self.block_va(layout.callbacks_offset, "TLS callback array")?
         };
 
-        // Write directory
-        if self.is_64bit {
-            let dir = TlsDirectory64 {
-                start_address_of_raw_data: raw_data_start_va,
-                end_address_of_raw_data: raw_data_end_va,
-                address_of_index: index_va,
-                address_of_callbacks: callbacks_va,
+        let mut data = Vec::with_capacity(layout.total_size);
+        self.push_directory(
+            &mut data,
+            TlsDirectory64 {
+                start_address_of_raw_data: raw_start_address,
+                end_address_of_raw_data: raw_end_address,
+                address_of_index: index_address,
+                address_of_callbacks: array_address,
                 size_of_zero_fill: 0,
                 characteristics: 0,
-            };
-            data.extend_from_slice(&dir.to_bytes());
-        } else {
-            let raw_data_start_va = u32::try_from(raw_data_start_va)
-                .map_err(|_| Error::invalid_data_directory("PE32 TLS start VA exceeds u32"))?;
-            let raw_data_end_va = u32::try_from(raw_data_end_va)
-                .map_err(|_| Error::invalid_data_directory("PE32 TLS end VA exceeds u32"))?;
-            let index_va = u32::try_from(index_va)
-                .map_err(|_| Error::invalid_data_directory("PE32 TLS index VA exceeds u32"))?;
-            let callbacks_va = u32::try_from(callbacks_va).map_err(|_| {
-                Error::invalid_data_directory("PE32 TLS callback-array VA exceeds u32")
-            })?;
-            let dir = TlsDirectory32 {
-                start_address_of_raw_data: raw_data_start_va,
-                end_address_of_raw_data: raw_data_end_va,
-                address_of_index: index_va,
-                address_of_callbacks: callbacks_va,
-                size_of_zero_fill: 0,
-                characteristics: 0,
-            };
-            data.extend_from_slice(&dir.to_bytes());
-        }
+            },
+        )?;
 
         // Write TLS index (initialized to 0)
         data.extend_from_slice(&0u32.to_le_bytes());
-        data.resize(callbacks_offset, 0);
+        data.resize(layout.callbacks_offset, 0);
 
         // Write callbacks array
         for &callback_rva in callback_rvas {
             let callback_rva = u32::try_from(callback_rva)
                 .map_err(|_| Error::invalid_data_directory("TLS callback RVA exceeds u32"))?;
-            let callback_va = checked_va(self.image_base, u64::from(callback_rva), "TLS callback")?;
-            if self.is_64bit {
-                data.extend_from_slice(&callback_va.to_le_bytes());
-            } else {
-                let callback_va = u32::try_from(callback_va).map_err(|_| {
-                    Error::invalid_data_directory("PE32 TLS callback VA exceeds u32")
-                })?;
-                data.extend_from_slice(&callback_va.to_le_bytes());
-            }
+            let callback_address =
+                checked_va(self.image_base, u64::from(callback_rva), "TLS callback")?;
+            self.push_pointer(&mut data, callback_address)?;
         }
 
         // Null terminator for callbacks
-        if self.is_64bit {
-            data.extend_from_slice(&0u64.to_le_bytes());
-        } else {
-            data.extend_from_slice(&0u32.to_le_bytes());
-        }
+        self.push_pointer(&mut data, 0)?;
 
-        Ok((data, dir_size as u32))
+        Ok((data, layout.dir_size_u32))
     }
 
-    /// Build from an existing TlsInfo structure.
+    /// Compute the serialized layout for `num_callbacks` callbacks.
+    fn layout(&self, num_callbacks: usize) -> Result<TlsLayout> {
+        let ptr_size: usize = if self.is_64bit { 8 } else { 4 };
+        let dir_size = if self.is_64bit {
+            TlsDirectory64::SIZE
+        } else {
+            TlsDirectory32::SIZE
+        };
+        let callbacks_offset = dir_size
+            .checked_add(4)
+            .and_then(|size| size.checked_add(ptr_size - 1))
+            .map(|size| size & !(ptr_size - 1))
+            .ok_or_else(|| Error::invalid_data_directory("TLS callback alignment overflow"))?;
+        let callback_bytes = num_callbacks
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(ptr_size))
+            .ok_or_else(|| Error::invalid_data_directory("TLS callback-array size overflow"))?;
+        let total_size = callbacks_offset
+            .checked_add(callback_bytes)
+            .ok_or_else(|| Error::invalid_data_directory("TLS data size overflow"))?;
+        let total_size_u32 = u32::try_from(total_size)
+            .map_err(|_| Error::invalid_data_directory("TLS data exceeds u32"))?;
+        let dir_size_u32 = u32::try_from(dir_size)
+            .map_err(|_| Error::invalid_data_directory("TLS data exceeds u32"))?;
+        Ok(TlsLayout {
+            dir_size,
+            callbacks_offset,
+            total_size,
+            dir_size_u32,
+            total_size_u32,
+        })
+    }
+
+    /// VA of the byte at `offset` within the TLS block.
+    fn block_va(&self, offset: usize, context: &str) -> Result<u64> {
+        let offset = u32::try_from(offset)
+            .map_err(|_| Error::invalid_data_directory(format!("{context} offset exceeds u32")))?;
+        let rva = self
+            .base_rva
+            .checked_add(offset)
+            .ok_or_else(|| Error::invalid_data_directory(format!("{context} RVA overflow")))?;
+        checked_va(self.image_base, u64::from(rva), context)
+    }
+
+    /// Append `directory` in the target bitness, narrowing VAs for PE32.
+    fn push_directory(&self, data: &mut Vec<u8>, directory: TlsDirectory64) -> Result<()> {
+        if self.is_64bit {
+            data.extend_from_slice(&directory.to_bytes());
+            return Ok(());
+        }
+        let narrow = |va: u64, message: &'static str| {
+            u32::try_from(va).map_err(|_| Error::invalid_data_directory(message))
+        };
+        let directory = TlsDirectory32 {
+            start_address_of_raw_data: narrow(
+                directory.start_address_of_raw_data,
+                "PE32 TLS start VA exceeds u32",
+            )?,
+            end_address_of_raw_data: narrow(
+                directory.end_address_of_raw_data,
+                "PE32 TLS end VA exceeds u32",
+            )?,
+            address_of_index: narrow(directory.address_of_index, "PE32 TLS index VA exceeds u32")?,
+            address_of_callbacks: narrow(
+                directory.address_of_callbacks,
+                "PE32 TLS callback-array VA exceeds u32",
+            )?,
+            size_of_zero_fill: directory.size_of_zero_fill,
+            characteristics: directory.characteristics,
+        };
+        data.extend_from_slice(&directory.to_bytes());
+        Ok(())
+    }
+
+    /// Append one callback-array pointer in the target bitness.
+    fn push_pointer(&self, data: &mut Vec<u8>, va: u64) -> Result<()> {
+        if self.is_64bit {
+            data.extend_from_slice(&va.to_le_bytes());
+        } else {
+            let va = u32::try_from(va)
+                .map_err(|_| Error::invalid_data_directory("PE32 TLS callback VA exceeds u32"))?;
+            data.extend_from_slice(&va.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    /// Build from an existing `TlsInfo` structure.
     ///
     /// This rebuilds the TLS directory from parsed info.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_build_from_info`] fails; use it for fallible
+    /// serialization.
+    #[must_use]
     pub fn build_from_info(&self, tls_info: &TlsInfo) -> (Vec<u8>, u32) {
         self.try_build_from_info(tls_info)
             .expect("TLS build failed: use try_build_from_info() for fallible serialization")
@@ -562,6 +659,12 @@ impl TlsBuilder {
 
     /// Rebuild parsed TLS information, rebasing its VA fields to this builder's
     /// image base while preserving zero-fill and characteristics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory bitness differs from the builder's,
+    /// if a raw-data VA lies outside `tls_info.image_base`'s 32-bit RVA space,
+    /// or if [`Self::try_build`] fails.
     pub fn try_build_from_info(&self, tls_info: &TlsInfo) -> Result<(Vec<u8>, u32)> {
         if matches!(tls_info.directory, Some(TlsDirectory::Tls64(_))) != self.is_64bit
             && tls_info.directory.is_some()
@@ -603,33 +706,25 @@ impl TlsBuilder {
     }
 
     /// Calculate the size needed for TLS data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the size exceeds `u32`; use [`Self::try_calculate_size`]
+    /// for a fallible calculation.
+    #[must_use]
     pub fn calculate_size(&self, num_callbacks: usize) -> usize {
         self.try_calculate_size(num_callbacks)
             .expect("TLS data size overflow: use try_calculate_size()")
     }
 
     /// Calculate the serialized size using checked pointer-array arithmetic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the size computation overflows or the total exceeds
+    /// `u32`.
     pub fn try_calculate_size(&self, num_callbacks: usize) -> Result<usize> {
-        let ptr_size = if self.is_64bit { 8 } else { 4 };
-        let dir_size = if self.is_64bit {
-            TlsDirectory64::SIZE
-        } else {
-            TlsDirectory32::SIZE
-        };
-        let callbacks_offset = dir_size
-            .checked_add(4)
-            .and_then(|size| size.checked_add(ptr_size - 1))
-            .map(|size| size & !(ptr_size - 1))
-            .ok_or_else(|| Error::invalid_data_directory("TLS callback alignment overflow"))?;
-        let callback_bytes = num_callbacks
-            .checked_add(1)
-            .and_then(|count| count.checked_mul(ptr_size))
-            .ok_or_else(|| Error::invalid_data_directory("TLS callback-array size overflow"))?;
-        let size = callbacks_offset
-            .checked_add(callback_bytes)
-            .ok_or_else(|| Error::invalid_data_directory("TLS data size overflow"))?;
-        u32::try_from(size).map_err(|_| Error::invalid_data_directory("TLS data exceeds u32"))?;
-        Ok(size)
+        Ok(self.layout(num_callbacks)?.total_size)
     }
 }
 
@@ -647,8 +742,7 @@ fn va_to_rva(va: u64, image_base: u64) -> Result<u32> {
         .and_then(|rva| u32::try_from(rva).ok())
         .ok_or_else(|| {
             Error::invalid_data_directory(format!(
-                "TLS VA {:#x} is outside image base {:#x}",
-                va, image_base
+                "TLS VA {va:#x} is outside image base {image_base:#x}"
             ))
         })
 }
@@ -670,10 +764,10 @@ mod tests {
     #[test]
     fn test_tls_directory_32_roundtrip() {
         let original = TlsDirectory32 {
-            start_address_of_raw_data: 0x00401000,
-            end_address_of_raw_data: 0x00401100,
-            address_of_index: 0x00402000,
-            address_of_callbacks: 0x00403000,
+            start_address_of_raw_data: 0x0040_1000,
+            end_address_of_raw_data: 0x0040_1100,
+            address_of_index: 0x0040_2000,
+            address_of_callbacks: 0x0040_3000,
             size_of_zero_fill: 256,
             characteristics: 0,
         };
@@ -686,10 +780,10 @@ mod tests {
     #[test]
     fn test_tls_directory_64_roundtrip() {
         let original = TlsDirectory64 {
-            start_address_of_raw_data: 0x0000000140001000,
-            end_address_of_raw_data: 0x0000000140001100,
-            address_of_index: 0x0000000140002000,
-            address_of_callbacks: 0x0000000140003000,
+            start_address_of_raw_data: 0x0000_0001_4000_1000,
+            end_address_of_raw_data: 0x0000_0001_4000_1100,
+            address_of_index: 0x0000_0001_4000_2000,
+            address_of_callbacks: 0x0000_0001_4000_3000,
             size_of_zero_fill: 512,
             characteristics: 0,
         };

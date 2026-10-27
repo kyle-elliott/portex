@@ -7,9 +7,13 @@ use crate::coff::MachineType;
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// RUNTIME_FUNCTION entry for x64 (12 bytes).
+/// `RUNTIME_FUNCTION` entry for x64 (12 bytes).
 /// Used in .pdata section for exception handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the BeginAddress/EndAddress/UnwindInfoAddress spec fields"
+)]
 pub struct RuntimeFunction {
     /// RVA of the start of the function.
     pub begin_address: u32,
@@ -33,8 +37,13 @@ pub struct PackedRuntimeFunction {
 }
 
 impl PackedRuntimeFunction {
+    /// Size of one ARM/ARM64 `.pdata` record in bytes.
     pub const SIZE: usize = 8;
 
+    /// Parse a record from little-endian bytes.
+    ///
+    /// # Errors
+    /// Returns an error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
@@ -45,6 +54,8 @@ impl PackedRuntimeFunction {
         })
     }
 
+    /// Serialize to little-endian bytes.
+    #[must_use]
     pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut bytes = [0; Self::SIZE];
         bytes[..4].copy_from_slice(&self.begin_address.to_le_bytes());
@@ -53,11 +64,13 @@ impl PackedRuntimeFunction {
     }
 
     /// Low-bit discriminator defined by the ARM exception ABI.
+    #[must_use]
     pub const fn flag(self) -> u8 {
-        (self.unwind_data & 0b11) as u8
+        self.unwind_data.to_le_bytes()[0] & 0b11
     }
 
     /// RVA of the external exception-data record when [`Self::flag`] is zero.
+    #[must_use]
     pub const fn exception_data_rva(self) -> Option<u32> {
         if self.flag() == 0 {
             Some(self.unwind_data & !0b11)
@@ -67,15 +80,20 @@ impl PackedRuntimeFunction {
     }
 
     /// Whether the unwind description is encoded directly in this record.
+    #[must_use]
     pub const fn is_packed(self) -> bool {
         self.flag() != 0
     }
 }
 
 impl RuntimeFunction {
+    /// Size of one x64 `RUNTIME_FUNCTION` record in bytes.
     pub const SIZE: usize = 12;
 
     /// Parse from bytes.
+    ///
+    /// # Errors
+    /// Returns an error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
@@ -89,7 +107,8 @@ impl RuntimeFunction {
     }
 
     /// Serialize to bytes.
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         buf[0..4].copy_from_slice(&self.begin_address.to_le_bytes());
         buf[4..8].copy_from_slice(&self.end_address.to_le_bytes());
@@ -98,12 +117,14 @@ impl RuntimeFunction {
     }
 
     /// Get the function size in bytes.
-    pub fn size(&self) -> u32 {
+    #[must_use]
+    pub fn size(self) -> u32 {
         self.end_address.saturating_sub(self.begin_address)
     }
 
     /// Check if an RVA is within this function.
-    pub fn contains_rva(&self, rva: u32) -> bool {
+    #[must_use]
+    pub fn contains_rva(self, rva: u32) -> bool {
         rva >= self.begin_address && rva < self.end_address
     }
 }
@@ -137,6 +158,8 @@ pub enum UnwindOpCode {
 }
 
 impl UnwindOpCode {
+    /// Decode a 4-bit `UWOP_*` operation code; `None` if unknown.
+    #[must_use]
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::PushNonVol),
@@ -166,23 +189,28 @@ pub struct UnwindCode {
 
 impl UnwindCode {
     /// Get the operation code.
-    pub fn op_code(&self) -> Option<UnwindOpCode> {
+    #[must_use]
+    pub fn op_code(self) -> Option<UnwindOpCode> {
         UnwindOpCode::from_u8(self.op_and_info & 0x0F)
     }
 
-    /// Get the operation info (interpretation depends on op_code).
-    pub fn op_info(&self) -> u8 {
+    /// Get the operation info (interpretation depends on `op_code`).
+    #[must_use]
+    pub fn op_info(self) -> u8 {
         self.op_and_info >> 4
     }
 }
 
-/// Unwind flags.
+/// No handler (`UNW_FLAG_NHANDLER`).
 pub const UNW_FLAG_NHANDLER: u8 = 0;
+/// Exception handler present (`UNW_FLAG_EHANDLER`).
 pub const UNW_FLAG_EHANDLER: u8 = 1;
+/// Termination handler present (`UNW_FLAG_UHANDLER`).
 pub const UNW_FLAG_UHANDLER: u8 = 2;
+/// Chained to another `RUNTIME_FUNCTION` (`UNW_FLAG_CHAININFO`).
 pub const UNW_FLAG_CHAININFO: u8 = 4;
 
-/// UNWIND_INFO header for x64.
+/// `UNWIND_INFO` header for x64.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UnwindInfo {
     /// Version (3 bits) and flags (5 bits).
@@ -195,9 +223,9 @@ pub struct UnwindInfo {
     pub frame_reg_and_offset: u8,
     /// Array of unwind codes.
     pub unwind_codes: Vec<UnwindCode>,
-    /// Exception handler RVA (if UNW_FLAG_EHANDLER or UNW_FLAG_UHANDLER).
+    /// Exception handler RVA (if `UNW_FLAG_EHANDLER` or `UNW_FLAG_UHANDLER`).
     pub exception_handler: Option<u32>,
-    /// Chained unwind info RVA (if UNW_FLAG_CHAININFO).
+    /// Chained unwind info RVA (if `UNW_FLAG_CHAININFO`).
     pub chained_info: Option<u32>,
     /// Complete chained runtime-function entry (if `UNW_FLAG_CHAININFO`).
     pub chained_function: Option<RuntimeFunction>,
@@ -206,41 +234,52 @@ pub struct UnwindInfo {
 }
 
 impl UnwindInfo {
-    /// Minimum size: version_flags + size_of_prolog + count_of_codes + frame_reg_and_offset.
+    /// Minimum size: `version_flags` + `size_of_prolog` + `count_of_codes` + `frame_reg_and_offset`.
     pub const MIN_SIZE: usize = 4;
 
     /// Get the version (bits 0-2).
+    #[must_use]
     pub fn version(&self) -> u8 {
         self.version_flags & 0x07
     }
 
     /// Get the flags (bits 3-7).
+    #[must_use]
     pub fn flags(&self) -> u8 {
         self.version_flags >> 3
     }
 
     /// Check if this has an exception handler.
+    #[must_use]
     pub fn has_exception_handler(&self) -> bool {
         let flags = self.flags();
         (flags & UNW_FLAG_EHANDLER) != 0 || (flags & UNW_FLAG_UHANDLER) != 0
     }
 
     /// Check if this is chained to another unwind info.
+    #[must_use]
     pub fn is_chained(&self) -> bool {
         (self.flags() & UNW_FLAG_CHAININFO) != 0
     }
 
     /// Get the frame register (0 = no frame register).
+    #[must_use]
     pub fn frame_register(&self) -> u8 {
         self.frame_reg_and_offset & 0x0F
     }
 
     /// Get the frame register offset (scaled by 16).
+    #[must_use]
     pub fn frame_offset(&self) -> u8 {
         self.frame_reg_and_offset >> 4
     }
 
     /// Parse from bytes at an RVA.
+    ///
+    /// # Errors
+    /// Returns an error if the buffer is too short for the header, unwind
+    /// codes, or trailing handler/chain data, or if the version/flags are
+    /// unsupported or inconsistent.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::MIN_SIZE {
             return Err(Error::buffer_too_small(Self::MIN_SIZE, data.len()));
@@ -323,12 +362,19 @@ impl UnwindInfo {
     }
 
     /// Serialize to bytes.
+    ///
+    /// # Panics
+    /// Panics if [`Self::try_to_bytes`] fails.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("unwind-info build failed: use try_to_bytes()")
     }
 
     /// Serialize a complete, internally consistent x64 unwind record.
+    ///
+    /// # Errors
+    /// Returns an error if [`Self::validate`] fails.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         self.try_to_bytes_with_handler_data(&self.handler_data)
     }
@@ -338,6 +384,10 @@ impl UnwindInfo {
     /// The record must remain internally consistent, and nonempty payloads
     /// require an exception handler. This avoids an intermediate owned copy
     /// when a caller emits several records using the same language metadata.
+    ///
+    /// # Errors
+    /// Returns an error if [`Self::validate`] fails, if `handler_data` is
+    /// nonempty without a handler, or if size computations overflow.
     pub fn try_to_bytes_with_handler_data(&self, handler_data: &[u8]) -> Result<Vec<u8>> {
         self.validate()?;
         if !handler_data.is_empty() && self.exception_handler.is_none() {
@@ -354,10 +404,7 @@ impl UnwindInfo {
             .checked_add(3)
             .map(|size| size & !3)
             .ok_or_else(|| Error::invalid_data_directory("unwind-code alignment overflow"))?;
-        let chained_size = self
-            .chained_function
-            .map(|_| RuntimeFunction::SIZE)
-            .unwrap_or(0);
+        let chained_size = self.chained_function.map_or(0, |_| RuntimeFunction::SIZE);
         let handler_size = self
             .exception_handler
             .map(|_| {
@@ -398,6 +445,10 @@ impl UnwindInfo {
     }
 
     /// Check the flag combination and associated trailing payload.
+    ///
+    /// # Errors
+    /// Returns an error for an unsupported version or flags, more than 255
+    /// unwind codes, or handler/chain data inconsistent with the flags.
     pub fn validate(&self) -> Result<()> {
         Self::validate_header(self.version_flags)?;
         if self.unwind_codes.len() > u8::MAX as usize {
@@ -471,6 +522,10 @@ pub struct ExceptionDirectory {
 
 impl ExceptionDirectory {
     /// Parse exception directory from a PE.
+    ///
+    /// # Errors
+    /// Returns an error if `pdata_size` is not a multiple of the record size,
+    /// an entry cannot be read, or the entries fail [`Self::validate`].
     pub fn parse<F>(pdata_rva: u32, pdata_size: u32, read_at_rva: F) -> Result<Self>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -507,11 +562,19 @@ impl ExceptionDirectory {
     }
 
     /// Serialize to bytes.
+    ///
+    /// # Panics
+    /// Panics if [`Self::try_to_bytes`] fails.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("exception-directory build failed: use try_to_bytes()")
     }
 
+    /// Serialize to bytes after validation.
+    ///
+    /// # Errors
+    /// Returns an error if [`Self::validate`] fails.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let mut buf = Vec::with_capacity(self.functions.len() * RuntimeFunction::SIZE);
@@ -521,6 +584,11 @@ impl ExceptionDirectory {
         Ok(buf)
     }
 
+    /// Check that entries are nonempty, sorted, non-overlapping and that the
+    /// table size fits in `u32`.
+    ///
+    /// # Errors
+    /// Returns an error describing the first violation found.
     pub fn validate(&self) -> Result<()> {
         let byte_size = self
             .functions
@@ -548,16 +616,19 @@ impl ExceptionDirectory {
     }
 
     /// Find the runtime function containing an RVA.
+    #[must_use]
     pub fn find_function(&self, rva: u32) -> Option<&RuntimeFunction> {
         self.functions.iter().find(|f| f.contains_rva(rva))
     }
 
     /// Get the number of functions.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.functions.len()
     }
 
     /// Check if empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.functions.is_empty()
     }
@@ -580,10 +651,16 @@ impl ExceptionDirectory {
 /// ARM-family exception directory using fixed-width packed records.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PackedExceptionDirectory {
+    /// Runtime-function records in table order.
     pub functions: Vec<PackedRuntimeFunction>,
 }
 
 impl PackedExceptionDirectory {
+    /// Parse an ARM-family `.pdata` table.
+    ///
+    /// # Errors
+    /// Returns an error if `pdata_size` is not a multiple of the record size
+    /// or an entry cannot be read.
     pub fn parse<F>(pdata_rva: u32, pdata_size: u32, read_at_rva: F) -> Result<Self>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -613,11 +690,20 @@ impl PackedExceptionDirectory {
         Ok(Self { functions })
     }
 
+    /// Serialize to bytes.
+    ///
+    /// # Panics
+    /// Panics if [`Self::try_to_bytes`] fails.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("packed exception-directory build failed: use try_to_bytes()")
     }
 
+    /// Serialize to bytes.
+    ///
+    /// # Errors
+    /// Returns an error if the table size exceeds `u32`.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         let byte_size = self
             .functions
@@ -633,10 +719,14 @@ impl PackedExceptionDirectory {
         Ok(bytes)
     }
 
+    /// Number of records.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.functions.len()
     }
 
+    /// Whether the table has no records.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.functions.is_empty()
     }
@@ -652,10 +742,20 @@ pub enum ExceptionTable {
     /// ARM64, ARM64EC, or ARM64X packed `.pdata` records.
     Arm64(PackedExceptionDirectory),
     /// Bytes for machines whose exception ABI is not modelled by this crate.
-    Raw { machine: u16, data: Vec<u8> },
+    Raw {
+        /// `IMAGE_FILE_HEADER.Machine` value.
+        machine: u16,
+        /// Raw table bytes.
+        data: Vec<u8>,
+    },
 }
 
 impl ExceptionTable {
+    /// Parse the exception directory according to `machine`.
+    ///
+    /// # Errors
+    /// Returns an error if the table cannot be read or parsed, or if ARM/ARM64
+    /// records are misaligned or (ARM64) use reserved flag 3.
     pub fn parse<F>(machine: u16, pdata_rva: u32, pdata_size: u32, read_at_rva: F) -> Result<Self>
     where
         F: Fn(u32, usize) -> Option<Vec<u8>>,
@@ -700,11 +800,20 @@ impl ExceptionTable {
         }
     }
 
+    /// Serialize to bytes.
+    ///
+    /// # Panics
+    /// Panics if [`Self::try_to_bytes`] fails.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         self.try_to_bytes()
             .expect("exception-table build failed: use try_to_bytes()")
     }
 
+    /// Serialize to bytes.
+    ///
+    /// # Errors
+    /// Returns an error if the table is invalid or its size exceeds `u32`.
     pub fn try_to_bytes(&self) -> Result<Vec<u8>> {
         match self {
             Self::X64(directory) => directory.try_to_bytes(),
@@ -718,6 +827,8 @@ impl ExceptionTable {
         }
     }
 
+    /// Number of records (or bytes for [`Self::Raw`]).
+    #[must_use]
     pub fn len(&self) -> usize {
         match self {
             Self::X64(directory) => directory.len(),
@@ -726,6 +837,8 @@ impl ExceptionTable {
         }
     }
 
+    /// Whether the table is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         match self {
             Self::X64(directory) => directory.is_empty(),
@@ -762,11 +875,13 @@ pub struct ExceptionBuilder {
 
 impl ExceptionBuilder {
     /// Create a new exception builder.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create from an existing exception directory.
+    #[must_use]
     pub fn from_directory(directory: ExceptionDirectory) -> Self {
         Self { directory }
     }
@@ -793,11 +908,18 @@ impl ExceptionBuilder {
     /// Returns (data, size) where:
     /// - `data` is the raw bytes to write to the section
     /// - `size` is the total size of the exception directory
+    ///
+    /// # Panics
+    /// Panics if [`Self::try_build`] fails.
     pub fn build(&mut self) -> (Vec<u8>, u32) {
         self.try_build()
             .expect("exception-directory build failed: use try_build()")
     }
 
+    /// Sort and build the exception directory, returning `(data, size)`.
+    ///
+    /// # Errors
+    /// Returns an error if the directory fails validation.
     pub fn try_build(&mut self) -> Result<(Vec<u8>, u32)> {
         // Sort by begin address (required for binary search)
         self.directory.sort();
@@ -808,11 +930,19 @@ impl ExceptionBuilder {
     }
 
     /// Build from the existing directory without modification.
+    ///
+    /// # Panics
+    /// Panics if [`Self::try_build_from`] fails.
+    #[must_use]
     pub fn build_from(directory: &ExceptionDirectory) -> (Vec<u8>, u32) {
         Self::try_build_from(directory)
             .expect("exception-directory build failed: use try_build_from()")
     }
 
+    /// Sort a copy of `directory` and build it, returning `(data, size)`.
+    ///
+    /// # Errors
+    /// Returns an error if the directory fails validation.
     pub fn try_build_from(directory: &ExceptionDirectory) -> Result<(Vec<u8>, u32)> {
         let mut dir = directory.clone();
         dir.sort();
@@ -823,21 +953,31 @@ impl ExceptionBuilder {
     }
 
     /// Get the number of functions.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.directory.len()
     }
 
     /// Check if empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.directory.is_empty()
     }
 
     /// Calculate the size needed for the exception directory.
+    ///
+    /// # Panics
+    /// Panics if [`Self::try_calculate_size`] fails.
+    #[must_use]
     pub fn calculate_size(num_functions: usize) -> usize {
         Self::try_calculate_size(num_functions)
             .expect("exception-directory size overflow: use try_calculate_size()")
     }
 
+    /// Calculate the size needed for `num_functions` entries.
+    ///
+    /// # Errors
+    /// Returns an error if the size overflows or exceeds `u32`.
     pub fn try_calculate_size(num_functions: usize) -> Result<usize> {
         let size = num_functions
             .checked_mul(RuntimeFunction::SIZE)
@@ -926,7 +1066,8 @@ mod tests {
             Some(bytes[offset..offset + available].to_vec())
         };
 
-        let parsed = ExceptionDirectory::parse(0, bytes.len() as u32, read_fn).unwrap();
+        let size = u32::try_from(bytes.len()).unwrap();
+        let parsed = ExceptionDirectory::parse(0, size, read_fn).unwrap();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed.functions[0].begin_address, 0x1000);
         assert_eq!(parsed.functions[1].begin_address, 0x1200);

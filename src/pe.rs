@@ -60,23 +60,11 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
-use crate::coff::{CoffHeader, PE_SIGNATURE, verify_pe_signature};
+use crate::coff::CoffHeader;
 use crate::dos::DosHeader;
-use crate::layout::{self, LayoutConfig};
 use crate::optional::OptionalHeader;
 use crate::prelude::*;
-use crate::reader::{ReadAt, SliceReader};
 use crate::section::{Section, SectionHeader};
-use crate::{Error, Result};
-
-#[cfg(feature = "std")]
-use crate::reader::FileReader;
-#[cfg(feature = "std")]
-use std::fs::File;
-#[cfg(feature = "std")]
-use std::io::Write;
-#[cfg(feature = "std")]
-use std::path::Path;
 
 /// Describes how PE bytes are laid out in their source.
 ///
@@ -118,6 +106,7 @@ pub struct ParseOptions {
 
 impl ParseOptions {
     /// Strict raw-file parsing.
+    #[must_use]
     pub const fn file() -> Self {
         Self {
             layout: SourceLayout::File,
@@ -127,6 +116,7 @@ impl ParseOptions {
     }
 
     /// Strict loader-mapped image parsing.
+    #[must_use]
     pub const fn mapped() -> Self {
         Self {
             layout: SourceLayout::Mapped,
@@ -136,12 +126,14 @@ impl ParseOptions {
     }
 
     /// Allow section ranges that are absent from the source.
+    #[must_use]
     pub const fn allow_missing_section_data(mut self) -> Self {
         self.missing_section_data = MissingSectionData::Empty;
         self
     }
 
     /// Record the actual base address of a relocated mapped image.
+    #[must_use]
     pub const fn runtime_image_base(mut self, image_base: u64) -> Self {
         self.runtime_image_base = Some(image_base);
         self

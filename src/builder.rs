@@ -52,6 +52,7 @@ impl Default for PeBuilder {
 
 impl PeBuilder {
     /// Create a new PE builder with default settings (64-bit console application).
+    #[must_use]
     pub fn new() -> Self {
         Self {
             machine: MachineType::Amd64,
@@ -68,6 +69,7 @@ impl PeBuilder {
     }
 
     /// Set the target machine type.
+    #[must_use]
     pub fn machine(mut self, machine: MachineType) -> Self {
         self.machine = machine;
         // Auto-detect 64-bit from machine type
@@ -80,54 +82,63 @@ impl PeBuilder {
     }
 
     /// Set the subsystem (GUI, console, etc).
+    #[must_use]
     pub fn subsystem(mut self, subsystem: Subsystem) -> Self {
         self.subsystem = subsystem;
         self
     }
 
     /// Set whether this is a 64-bit PE (PE32+). Usually auto-detected from machine type.
-    pub fn is_64bit(mut self, is_64bit: bool) -> Self {
+    #[must_use]
+    pub fn pe32_plus(mut self, is_64bit: bool) -> Self {
         self.is_64bit = is_64bit;
         self
     }
 
-    /// Set the image base address.
+    /// Set the preferred image base (`ImageBase`, a VA).
+    #[must_use]
     pub fn image_base(mut self, base: u64) -> Self {
         self.image_base = base;
         self
     }
 
     /// Set the entry point RVA.
+    #[must_use]
     pub fn entry_point(mut self, rva: u32) -> Self {
         self.entry_point = rva;
         self
     }
 
     /// Set the file alignment (default: 0x200).
+    #[must_use]
     pub fn file_alignment(mut self, alignment: u32) -> Self {
         self.file_alignment = alignment;
         self
     }
 
     /// Set the section alignment (default: 0x1000).
+    #[must_use]
     pub fn section_alignment(mut self, alignment: u32) -> Self {
         self.section_alignment = alignment;
         self
     }
 
     /// Set DLL characteristics flags.
+    #[must_use]
     pub fn dll_characteristics(mut self, flags: u16) -> Self {
         self.dll_characteristics = flags;
         self
     }
 
     /// Mark this as a DLL instead of an executable.
-    pub fn is_dll(mut self, is_dll: bool) -> Self {
+    #[must_use]
+    pub fn dll(mut self, is_dll: bool) -> Self {
         self.is_dll = is_dll;
         self
     }
 
     /// Add a section with the given name, data, and characteristics.
+    #[must_use]
     pub fn add_section(mut self, name: &str, data: Vec<u8>, characteristics: u32) -> Self {
         self.sections
             .push((name.to_string(), data, characteristics));
@@ -136,6 +147,11 @@ impl PeBuilder {
 
     /// Build the PE image, panicking if the requested layout is invalid.
     /// Prefer [`Self::try_build`] when values come from an untrusted source.
+    ///
+    /// # Panics
+    ///
+    /// Panics whenever [`Self::try_build`] would return an error.
+    #[must_use]
     pub fn build(self) -> PeImage {
         self.try_build()
             .expect("PE builder failed: use PeBuilder::try_build() to handle invalid settings")
@@ -143,6 +159,14 @@ impl PeBuilder {
 
     /// Build the PE image with checked machine, width, alignment, and size
     /// relationships.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidSection`](crate::error::ErrorKind::InvalidSection)
+    /// if a PE32 image base exceeds `u32`, the image base is not 64-KiB aligned,
+    /// the machine type does not match the optional-header width, there are too
+    /// many sections, or a section's data exceeds `u32`. Also propagates any error
+    /// from the layout update.
     pub fn try_build(self) -> Result<PeImage> {
         if !self.is_64bit && self.image_base > u64::from(u32::MAX) {
             return Err(Error::invalid_section(format!(
@@ -177,13 +201,13 @@ impl PeBuilder {
         }
 
         // Create DOS header
-        let dos_header = self.create_dos_header();
+        let dos_header = Self::create_dos_header();
 
         // Create COFF header
-        let coff_header = self.create_coff_header();
+        let coff_header = self.create_coff_header()?;
 
         // Create optional header
-        let optional_header = self.create_optional_header();
+        let optional_header = self.create_optional_header()?;
 
         // Create sections
         let sections = self.create_sections();
@@ -203,7 +227,7 @@ impl PeBuilder {
         Ok(pe)
     }
 
-    fn create_dos_header(&self) -> DosHeader {
+    fn create_dos_header() -> DosHeader {
         DosHeader {
             e_magic: DOS_SIGNATURE,
             e_cblp: 0x90,
@@ -227,7 +251,7 @@ impl PeBuilder {
         }
     }
 
-    fn create_coff_header(&self) -> CoffHeader {
+    fn create_coff_header(&self) -> Result<CoffHeader> {
         let mut characteristics = crate::coff::characteristics::EXECUTABLE_IMAGE;
         if self.is_64bit {
             characteristics |= crate::coff::characteristics::LARGE_ADDRESS_AWARE;
@@ -238,18 +262,21 @@ impl PeBuilder {
             characteristics |= crate::coff::characteristics::DLL;
         }
 
-        CoffHeader {
+        let number_of_sections = u16::try_from(self.sections.len())
+            .map_err(|_| Error::invalid_section("section count exceeds u16"))?;
+
+        Ok(CoffHeader {
             machine: self.machine as u16,
-            number_of_sections: self.sections.len() as u16,
+            number_of_sections,
             time_date_stamp: 0,
             pointer_to_symbol_table: 0,
             number_of_symbols: 0,
             size_of_optional_header: if self.is_64bit { 240 } else { 224 },
             characteristics,
-        }
+        })
     }
 
-    fn create_optional_header(&self) -> OptionalHeader {
+    fn create_optional_header(&self) -> Result<OptionalHeader> {
         // 16 data directories (standard)
         let data_directories = vec![
             DataDirectory {
@@ -259,7 +286,7 @@ impl PeBuilder {
             16
         ];
 
-        if self.is_64bit {
+        Ok(if self.is_64bit {
             OptionalHeader::Pe32Plus(OptionalHeader64 {
                 magic: PE32PLUS_MAGIC,
                 major_linker_version: 14,
@@ -284,9 +311,9 @@ impl PeBuilder {
                 check_sum: 0,
                 subsystem: self.subsystem as u16,
                 dll_characteristics: self.dll_characteristics,
-                size_of_stack_reserve: 0x100000,
+                size_of_stack_reserve: 0x0010_0000,
                 size_of_stack_commit: 0x1000,
-                size_of_heap_reserve: 0x100000,
+                size_of_heap_reserve: 0x0010_0000,
                 size_of_heap_commit: 0x1000,
                 loader_flags: 0,
                 number_of_rva_and_sizes: 16,
@@ -303,7 +330,8 @@ impl PeBuilder {
                 address_of_entry_point: self.entry_point,
                 base_of_code: 0,
                 base_of_data: 0,
-                image_base: self.image_base as u32,
+                image_base: u32::try_from(self.image_base)
+                    .map_err(|_| Error::invalid_section("PE32 image base exceeds u32"))?,
                 section_alignment: self.section_alignment,
                 file_alignment: self.file_alignment,
                 major_operating_system_version: 6,
@@ -318,15 +346,15 @@ impl PeBuilder {
                 check_sum: 0,
                 subsystem: self.subsystem as u16,
                 dll_characteristics: self.dll_characteristics,
-                size_of_stack_reserve: 0x100000,
+                size_of_stack_reserve: 0x0010_0000,
                 size_of_stack_commit: 0x1000,
-                size_of_heap_reserve: 0x100000,
+                size_of_heap_reserve: 0x0010_0000,
                 size_of_heap_commit: 0x1000,
                 loader_flags: 0,
                 number_of_rva_and_sizes: 16,
                 data_directories,
             })
-        }
+        })
     }
 
     fn create_sections(&self) -> Vec<Section> {

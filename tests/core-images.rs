@@ -3,8 +3,9 @@
 use portex::directories::{
     Certificate, CertificateRevision, CertificateType, ExportAddress, ExportDirectory, ExportTable,
     ExportTableBuilder, ExportedFunction, LoadConfigBuilder, LoadConfigDirectory,
-    LoadConfigDirectory32, RelocationBlock, RelocationEntry, RelocationTable, RelocationType,
-    RuntimeFunction, SecurityDirectory, TlsDirectory, TlsDirectory64, TlsInfo, UnwindInfo,
+    LoadConfigDirectory32, LoadConfigDirectory64, RelocationBlock, RelocationEntry,
+    RelocationTable, RelocationType, RuntimeFunction, SecurityDirectory, TlsDirectory,
+    TlsDirectory64, TlsInfo, UnwindInfo,
 };
 use portex::headers::{CoffHeader, DataDirectoryType, MachineType, OptionalHeader, SectionHeader};
 use portex::image::{MissingSectionData, ParseOptions, PeBuilder, PeFile, PeHeaders, PeImage};
@@ -33,7 +34,7 @@ fn test_image() -> PeImage {
 }
 
 fn section_table_offset(headers: &PeHeaders) -> usize {
-    headers.pe_offset as usize
+    usize::try_from(headers.pe_offset).expect("PE offset fits usize")
         + 4
         + CoffHeader::SIZE
         + headers.coff_header.size_of_optional_header as usize
@@ -97,7 +98,8 @@ fn raw_section_with_bytes_and_zero_pointer_is_rejected() {
 fn optional_header_directory_count_cannot_consume_section_headers() {
     let mut raw = test_image().try_build().unwrap();
     let headers = PeHeaders::from_slice(&raw).unwrap();
-    let optional = headers.pe_offset as usize + 4 + CoffHeader::SIZE;
+    let optional =
+        usize::try_from(headers.pe_offset).expect("PE offset fits usize") + 4 + CoffHeader::SIZE;
     raw[optional + 108..optional + 112].copy_from_slice(&17u32.to_le_bytes());
     assert!(PeImage::parse(&raw).is_err());
 }
@@ -105,7 +107,8 @@ fn optional_header_directory_count_cannot_consume_section_headers() {
 #[test]
 fn executable_image_section_limit_is_enforced() {
     let mut raw = test_image().try_build().unwrap();
-    let pe_offset = PeHeaders::from_slice(&raw).unwrap().pe_offset as usize;
+    let pe_offset = usize::try_from(PeHeaders::from_slice(&raw).unwrap().pe_offset)
+        .expect("PE offset fits usize");
     raw[pe_offset + 6..pe_offset + 8].copy_from_slice(&97u16.to_le_bytes());
     assert!(PeImage::parse(&raw).is_err());
 }
@@ -244,7 +247,8 @@ fn misaligned_certificate_file_offset_is_rejected() {
     let headers = PeHeaders::from_slice(&raw).unwrap();
     let security =
         headers.optional_header.data_directories()[DataDirectoryType::Security.as_index()];
-    let optional = headers.pe_offset as usize + 4 + CoffHeader::SIZE;
+    let optional =
+        usize::try_from(headers.pe_offset).expect("PE offset fits usize") + 4 + CoffHeader::SIZE;
     let entry = optional + portex::OptionalHeader64::BASE_SIZE + 4 * 8;
     raw[entry..entry + 4].copy_from_slice(&(security.virtual_address + 1).to_le_bytes());
     assert!(PeFile::parse(&raw).is_err());
@@ -270,7 +274,7 @@ fn relocation_materializes_a_rebased_mapped_image() {
     image.sections[0].data[..8].copy_from_slice(&(preferred + 0x1234).to_le_bytes());
     image
         .update_relocations(
-            RelocationTable {
+            &RelocationTable {
                 blocks: vec![RelocationBlock {
                     page_rva: 0x1000,
                     block_size: 0,
@@ -338,7 +342,7 @@ fn relocated_mapped_tls_uses_the_runtime_base() {
         .collect();
     image
         .update_relocations(
-            RelocationTable {
+            &RelocationTable {
                 blocks: vec![RelocationBlock {
                     page_rva: page,
                     block_size: 0,
@@ -445,7 +449,7 @@ fn malformed_resource_entry_order_is_rejected() {
     };
     bytes[ResourceDirectoryHeader::SIZE..].copy_from_slice(&numeric_entry.to_bytes());
     assert!(
-        ResourceDirectory::parse(base, bytes.len() as u32, |rva, len| {
+        ResourceDirectory::parse(base, u32::try_from(bytes.len()).unwrap(), |rva, len| {
             read_from_blob(&bytes, base, rva, len)
         })
         .is_err()
@@ -455,7 +459,7 @@ fn malformed_resource_entry_order_is_rejected() {
 #[test]
 fn load_config_preserves_versioned_tail_and_checks_pe32_values() {
     let config = LoadConfigDirectory32 {
-        security_cookie: 0x401000,
+        security_cookie: 0x0040_1000,
         trailing_data: vec![9, 8, 7, 6, 5],
         ..Default::default()
     };
@@ -472,7 +476,9 @@ fn load_config_preserves_versioned_tail_and_checks_pe32_values() {
     );
     assert!(
         builder
-            .try_build(&LoadConfigDirectory::Config64(Default::default()))
+            .try_build(&LoadConfigDirectory::Config64(
+                LoadConfigDirectory64::default()
+            ))
             .is_err()
     );
 }
@@ -512,7 +518,7 @@ fn arm64_exception_records_are_architecture_aware() {
     let parsed = ExceptionTable::parse(
         MachineType::Arm64 as u16,
         0x7000,
-        record.len() as u32,
+        u32::try_from(record.len()).unwrap(),
         |rva, len| read_from_blob(&record, 0x7000, rva, len),
     )
     .unwrap();
@@ -527,7 +533,7 @@ fn arm64_exception_records_are_architecture_aware() {
         ExceptionTable::parse(
             MachineType::Arm64 as u16,
             0x7000,
-            reserved.len() as u32,
+            u32::try_from(reserved.len()).unwrap(),
             |rva, len| read_from_blob(&reserved, 0x7000, rva, len),
         )
         .is_err()
@@ -604,7 +610,7 @@ fn builder_rejects_machine_and_optional_header_width_mismatch() {
     assert!(
         PeBuilder::new()
             .machine(MachineType::Amd64)
-            .is_64bit(false)
+            .pe32_plus(false)
             .try_build()
             .is_err()
     );

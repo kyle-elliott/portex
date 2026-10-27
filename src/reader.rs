@@ -13,10 +13,14 @@ use std::path::Path;
 /// Trait for reading bytes from a source (file, memory, remote process, etc.).
 ///
 /// Implement this trait to support reading PE structures from custom sources,
-/// such as remote process memory via ReadProcessMemory.
+/// such as remote process memory via `ReadProcessMemory`.
 pub trait ReadAt {
     /// Read bytes at the given offset into the buffer.
-    /// Returns the number of bytes actually read.
+    /// Returns the number of bytes actually read (0 at or past the end).
+    ///
+    /// # Errors
+    ///
+    /// Returns an implementation-defined error if the underlying source fails.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize>;
 
     /// Get the total size of the source, if known.
@@ -24,6 +28,15 @@ pub trait ReadAt {
     fn size(&self) -> Option<u64>;
 
     /// Read exact number of bytes at offset, returning error if not enough data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::BufferTooSmall`](crate::error::ErrorKind::BufferTooSmall)
+    /// if the source ends before `buf` is filled,
+    /// [`ErrorKind::OffsetOutOfBounds`](crate::error::ErrorKind::OffsetOutOfBounds)
+    /// if the offset arithmetic overflows, a generic error if [`Self::read_at`]
+    /// reports more bytes than requested, and propagates any error from
+    /// [`Self::read_at`].
     fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
         let expected = buf.len();
         let mut total = 0usize;
@@ -50,6 +63,10 @@ pub trait ReadAt {
     }
 
     /// Read a u16 at the given offset (little-endian).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`Self::read_exact_at`].
     fn read_u16_at(&self, offset: u64) -> Result<u16> {
         let mut buf = [0u8; 2];
         self.read_exact_at(offset, &mut buf)?;
@@ -57,6 +74,10 @@ pub trait ReadAt {
     }
 
     /// Read a u32 at the given offset (little-endian).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`Self::read_exact_at`].
     fn read_u32_at(&self, offset: u64) -> Result<u32> {
         let mut buf = [0u8; 4];
         self.read_exact_at(offset, &mut buf)?;
@@ -64,6 +85,10 @@ pub trait ReadAt {
     }
 
     /// Read a u64 at the given offset (little-endian).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`Self::read_exact_at`].
     fn read_u64_at(&self, offset: u64) -> Result<u64> {
         let mut buf = [0u8; 8];
         self.read_exact_at(offset, &mut buf)?;
@@ -71,6 +96,10 @@ pub trait ReadAt {
     }
 
     /// Read an i32 at the given offset (little-endian).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`Self::read_exact_at`].
     fn read_i32_at(&self, offset: u64) -> Result<i32> {
         let mut buf = [0u8; 4];
         self.read_exact_at(offset, &mut buf)?;
@@ -78,6 +107,11 @@ pub trait ReadAt {
     }
 
     /// Read a block of bytes at offset, returning owned Vec.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generic error if `len` bytes cannot be allocated, and
+    /// propagates any error from [`Self::read_exact_at`].
     fn read_bytes_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
         buf.try_reserve_exact(len)
@@ -121,6 +155,10 @@ impl<R> SeekReader<R> {
 
 impl<R: nostdio::Seek> SeekReader<R> {
     /// Discover the stream length while restoring its original position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if querying the position or seeking fails.
     pub fn with_discovered_size(mut inner: R) -> Result<Self> {
         let original = inner.stream_position().map_err(map_nostdio_error)?;
         let size = inner.seek(SeekFrom::End(0)).map_err(map_nostdio_error)?;
@@ -175,10 +213,14 @@ pub struct SliceReader<'a> {
 }
 
 impl<'a> SliceReader<'a> {
+    /// Wrap a borrowed byte slice.
+    #[must_use]
     pub fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
 
+    /// Get the underlying byte slice.
+    #[must_use]
     pub fn data(&self) -> &[u8] {
         self.data
     }
@@ -186,9 +228,8 @@ impl<'a> SliceReader<'a> {
 
 impl ReadAt for SliceReader<'_> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let offset = match usize::try_from(offset) {
-            Ok(o) => o,
-            Err(_) => return Ok(0), // Offset too large for this platform
+        let Ok(offset) = usize::try_from(offset) else {
+            return Ok(0); // Offset too large for this platform
         };
         if offset >= self.data.len() {
             return Ok(0);
@@ -211,14 +252,20 @@ pub struct VecReader {
 }
 
 impl VecReader {
+    /// Wrap an owned byte vector.
+    #[must_use]
     pub fn new(data: Vec<u8>) -> Self {
         Self { data }
     }
 
+    /// Get the underlying bytes.
+    #[must_use]
     pub fn data(&self) -> &[u8] {
         &self.data
     }
 
+    /// Consume the reader and return the owned bytes.
+    #[must_use]
     pub fn into_inner(self) -> Vec<u8> {
         self.data
     }
@@ -226,9 +273,8 @@ impl VecReader {
 
 impl ReadAt for VecReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let offset = match usize::try_from(offset) {
-            Ok(o) => o,
-            Err(_) => return Ok(0), // Offset too large for this platform
+        let Ok(offset) = usize::try_from(offset) else {
+            return Ok(0); // Offset too large for this platform
         };
         if offset >= self.data.len() {
             return Ok(0);
@@ -245,11 +291,17 @@ impl ReadAt for VecReader {
 }
 
 #[cfg(feature = "std")]
+/// Positional reader for a file on disk.
 pub type FileReader = SeekReader<File>;
 
 #[cfg(feature = "std")]
 impl SeekReader<File> {
     /// Open a file for reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the file cannot be opened or its size cannot be
+    /// determined.
     #[must_use = "opening a file may fail"]
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         Self::with_discovered_size(File::open(path)?)
@@ -271,14 +323,35 @@ pub struct BaseAddressReader {
 }
 
 impl BaseAddressReader {
+    /// Create a reader for memory starting at `base`, optionally bounded to
+    /// `size` bytes.
+    ///
     /// # Safety
-    /// Caller must ensure memory at `base` is valid for `size` bytes.
+    ///
+    /// For the lifetime of the reader, memory at `base` must be readable for
+    /// `size` bytes, or, when `size` is `None`, for every range later requested
+    /// through [`ReadAt::read_at`], and must not be mutated concurrently.
+    #[must_use]
+    #[expect(
+        unsafe_code,
+        reason = "constructor encodes the caller's memory-validity invariant"
+    )]
     pub unsafe fn new(base: *const u8, size: Option<usize>) -> Self {
         Self { base, size }
     }
 
+    /// Create an unbounded reader for memory starting at `base`.
+    ///
     /// # Safety
-    /// Caller must ensure memory at `base` is valid.
+    ///
+    /// For the lifetime of the reader, every range later requested through
+    /// [`ReadAt::read_at`] (offset from `base`) must be readable and must not
+    /// be mutated concurrently.
+    #[must_use]
+    #[expect(
+        unsafe_code,
+        reason = "constructor encodes the caller's memory-validity invariant"
+    )]
     pub unsafe fn from_base(base: *const u8) -> Self {
         Self { base, size: None }
     }
@@ -286,9 +359,8 @@ impl BaseAddressReader {
 
 impl ReadAt for BaseAddressReader {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let offset = match usize::try_from(offset) {
-            Ok(o) => o,
-            Err(_) => return Ok(0), // Offset too large for this platform
+        let Ok(offset) = usize::try_from(offset) else {
+            return Ok(0); // Offset too large for this platform
         };
         if let Some(size) = self.size {
             if offset >= size {
@@ -296,11 +368,19 @@ impl ReadAt for BaseAddressReader {
             }
             let available = size - offset;
             let to_read = buf.len().min(available);
+            // SAFETY: the constructor's caller guaranteed `size` readable bytes
+            // at `base`; `offset + to_read <= size`, and `buf` is a distinct
+            // exclusive borrow of at least `to_read` bytes.
+            #[expect(unsafe_code, reason = "reads caller-guaranteed in-process memory")]
             unsafe {
                 core::ptr::copy_nonoverlapping(self.base.add(offset), buf.as_mut_ptr(), to_read);
             }
             return Ok(to_read);
         }
+        // SAFETY: for unbounded readers the constructor's caller guaranteed that
+        // every requested range from `base` is readable; `buf` is a distinct
+        // exclusive borrow of exactly `buf.len()` bytes.
+        #[expect(unsafe_code, reason = "reads caller-guaranteed in-process memory")]
         unsafe {
             core::ptr::copy_nonoverlapping(self.base.add(offset), buf.as_mut_ptr(), buf.len());
         }
@@ -312,7 +392,20 @@ impl ReadAt for BaseAddressReader {
     }
 }
 
+#[expect(
+    unsafe_code,
+    reason = "raw pointer field opts out of Send automatically"
+)]
+// SAFETY: the reader only reads through the raw pointer and never writes or
+// frees it; the constructor's caller guarantees the memory stays valid and
+// unmutated, so moving the reader to another thread is sound.
 unsafe impl Send for BaseAddressReader {}
+#[expect(
+    unsafe_code,
+    reason = "raw pointer field opts out of Sync automatically"
+)]
+// SAFETY: `read_at` takes `&self` and only reads through the raw pointer, so
+// concurrent shared access performs only concurrent reads of valid memory.
 unsafe impl Sync for BaseAddressReader {}
 
 #[cfg(test)]

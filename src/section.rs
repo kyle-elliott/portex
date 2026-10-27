@@ -6,53 +6,93 @@ use crate::{Error, Result};
 
 /// Section characteristics flags.
 pub mod characteristics {
-    pub const CODE: u32 = 0x00000020;
-    pub const INITIALIZED_DATA: u32 = 0x00000040;
-    pub const UNINITIALIZED_DATA: u32 = 0x00000080;
-    pub const LINK_INFO: u32 = 0x00000200;
-    pub const LINK_REMOVE: u32 = 0x00000800;
-    pub const LINK_COMDAT: u32 = 0x00001000;
-    pub const GPREL: u32 = 0x00008000;
-    pub const ALIGN_1BYTES: u32 = 0x00100000;
-    pub const ALIGN_2BYTES: u32 = 0x00200000;
-    pub const ALIGN_4BYTES: u32 = 0x00300000;
-    pub const ALIGN_8BYTES: u32 = 0x00400000;
-    pub const ALIGN_16BYTES: u32 = 0x00500000;
-    pub const ALIGN_32BYTES: u32 = 0x00600000;
-    pub const ALIGN_64BYTES: u32 = 0x00700000;
-    pub const ALIGN_128BYTES: u32 = 0x00800000;
-    pub const ALIGN_256BYTES: u32 = 0x00900000;
-    pub const ALIGN_512BYTES: u32 = 0x00A00000;
-    pub const ALIGN_1024BYTES: u32 = 0x00B00000;
-    pub const ALIGN_2048BYTES: u32 = 0x00C00000;
-    pub const ALIGN_4096BYTES: u32 = 0x00D00000;
-    pub const ALIGN_8192BYTES: u32 = 0x00E00000;
-    pub const NRELOC_OVFL: u32 = 0x01000000;
-    pub const DISCARDABLE: u32 = 0x02000000;
-    pub const NOT_CACHED: u32 = 0x04000000;
-    pub const NOT_PAGED: u32 = 0x08000000;
-    pub const SHARED: u32 = 0x10000000;
-    pub const EXECUTE: u32 = 0x20000000;
-    pub const READ: u32 = 0x40000000;
-    pub const WRITE: u32 = 0x80000000;
+    /// `IMAGE_SCN_CNT_CODE`: the section contains executable code.
+    pub const CODE: u32 = 0x0000_0020;
+    /// `IMAGE_SCN_CNT_INITIALIZED_DATA`: the section contains initialized data.
+    pub const INITIALIZED_DATA: u32 = 0x0000_0040;
+    /// `IMAGE_SCN_CNT_UNINITIALIZED_DATA`: the section contains uninitialized (zero-filled) data.
+    pub const UNINITIALIZED_DATA: u32 = 0x0000_0080;
+    /// `IMAGE_SCN_LNK_INFO`: the section contains comments or linker directives (object files only).
+    pub const LINK_INFO: u32 = 0x0000_0200;
+    /// `IMAGE_SCN_LNK_REMOVE`: the section is not included in the image (object files only).
+    pub const LINK_REMOVE: u32 = 0x0000_0800;
+    /// `IMAGE_SCN_LNK_COMDAT`: the section contains COMDAT data (object files only).
+    pub const LINK_COMDAT: u32 = 0x0000_1000;
+    /// `IMAGE_SCN_GPREL`: the section contains data referenced through the global pointer.
+    pub const GPREL: u32 = 0x0000_8000;
+    /// `IMAGE_SCN_ALIGN_1BYTES`: align data on a 1-byte boundary (object files only).
+    pub const ALIGN_1BYTES: u32 = 0x0010_0000;
+    /// `IMAGE_SCN_ALIGN_2BYTES`: align data on a 2-byte boundary (object files only).
+    pub const ALIGN_2BYTES: u32 = 0x0020_0000;
+    /// `IMAGE_SCN_ALIGN_4BYTES`: align data on a 4-byte boundary (object files only).
+    pub const ALIGN_4BYTES: u32 = 0x0030_0000;
+    /// `IMAGE_SCN_ALIGN_8BYTES`: align data on an 8-byte boundary (object files only).
+    pub const ALIGN_8BYTES: u32 = 0x0040_0000;
+    /// `IMAGE_SCN_ALIGN_16BYTES`: align data on a 16-byte boundary (object files only).
+    pub const ALIGN_16BYTES: u32 = 0x0050_0000;
+    /// `IMAGE_SCN_ALIGN_32BYTES`: align data on a 32-byte boundary (object files only).
+    pub const ALIGN_32BYTES: u32 = 0x0060_0000;
+    /// `IMAGE_SCN_ALIGN_64BYTES`: align data on a 64-byte boundary (object files only).
+    pub const ALIGN_64BYTES: u32 = 0x0070_0000;
+    /// `IMAGE_SCN_ALIGN_128BYTES`: align data on a 128-byte boundary (object files only).
+    pub const ALIGN_128BYTES: u32 = 0x0080_0000;
+    /// `IMAGE_SCN_ALIGN_256BYTES`: align data on a 256-byte boundary (object files only).
+    pub const ALIGN_256BYTES: u32 = 0x0090_0000;
+    /// `IMAGE_SCN_ALIGN_512BYTES`: align data on a 512-byte boundary (object files only).
+    pub const ALIGN_512BYTES: u32 = 0x00A0_0000;
+    /// `IMAGE_SCN_ALIGN_1024BYTES`: align data on a 1024-byte boundary (object files only).
+    pub const ALIGN_1024BYTES: u32 = 0x00B0_0000;
+    /// `IMAGE_SCN_ALIGN_2048BYTES`: align data on a 2048-byte boundary (object files only).
+    pub const ALIGN_2048BYTES: u32 = 0x00C0_0000;
+    /// `IMAGE_SCN_ALIGN_4096BYTES`: align data on a 4096-byte boundary (object files only).
+    pub const ALIGN_4096BYTES: u32 = 0x00D0_0000;
+    /// `IMAGE_SCN_ALIGN_8192BYTES`: align data on an 8192-byte boundary (object files only).
+    pub const ALIGN_8192BYTES: u32 = 0x00E0_0000;
+    /// `IMAGE_SCN_LNK_NRELOC_OVFL`: the section contains extended relocations (count stored in the first relocation).
+    pub const NRELOC_OVFL: u32 = 0x0100_0000;
+    /// `IMAGE_SCN_MEM_DISCARDABLE`: the section can be discarded as needed.
+    pub const DISCARDABLE: u32 = 0x0200_0000;
+    /// `IMAGE_SCN_MEM_NOT_CACHED`: the section cannot be cached.
+    pub const NOT_CACHED: u32 = 0x0400_0000;
+    /// `IMAGE_SCN_MEM_NOT_PAGED`: the section is not pageable.
+    pub const NOT_PAGED: u32 = 0x0800_0000;
+    /// `IMAGE_SCN_MEM_SHARED`: the section can be shared in memory.
+    pub const SHARED: u32 = 0x1000_0000;
+    /// `IMAGE_SCN_MEM_EXECUTE`: the section can be executed as code.
+    pub const EXECUTE: u32 = 0x2000_0000;
+    /// `IMAGE_SCN_MEM_READ`: the section can be read.
+    pub const READ: u32 = 0x4000_0000;
+    /// `IMAGE_SCN_MEM_WRITE`: the section can be written to.
+    pub const WRITE: u32 = 0x8000_0000;
 }
 
-/// IMAGE_SECTION_HEADER - 40 bytes
+/// `IMAGE_SECTION_HEADER`: one 40-byte entry of the section table.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SectionHeader {
+    /// Section name, UTF-8, null-padded to 8 bytes (not null-terminated if exactly 8 bytes).
     pub name: [u8; 8],
+    /// Size of the section when loaded into memory, in bytes.
     pub virtual_size: u32,
+    /// RVA of the first byte of the section when loaded into memory.
     pub virtual_address: u32,
+    /// Size of the initialized data on disk, in bytes (multiple of `FileAlignment`).
     pub size_of_raw_data: u32,
+    /// File offset of the section's first page on disk; 0 for uninitialized-only sections.
     pub pointer_to_raw_data: u32,
+    /// File offset of the section's COFF relocation entries (0 for images).
     pub pointer_to_relocations: u32,
+    /// File offset of the section's COFF line-number entries (deprecated, normally 0).
     pub pointer_to_linenumbers: u32,
+    /// Number of COFF relocation entries for the section (0 for images).
     pub number_of_relocations: u16,
+    /// Number of COFF line-number entries for the section (deprecated, normally 0).
     pub number_of_linenumbers: u16,
+    /// Section flags; see [`characteristics`].
     pub characteristics: u32,
 }
 
 impl SectionHeader {
+    /// Size of an encoded `IMAGE_SECTION_HEADER`, in bytes.
     pub const SIZE: usize = 40;
 
     /// Get the section name as a string (trimmed of null bytes).
@@ -82,26 +122,31 @@ impl SectionHeader {
     }
 
     /// Check if the section is executable.
+    #[must_use]
     pub fn is_executable(&self) -> bool {
         self.characteristics & characteristics::EXECUTE != 0
     }
 
     /// Check if the section is readable.
+    #[must_use]
     pub fn is_readable(&self) -> bool {
         self.characteristics & characteristics::READ != 0
     }
 
     /// Check if the section is writable.
+    #[must_use]
     pub fn is_writable(&self) -> bool {
         self.characteristics & characteristics::WRITE != 0
     }
 
     /// Check if the section contains code.
+    #[must_use]
     pub fn contains_code(&self) -> bool {
         self.characteristics & characteristics::CODE != 0
     }
 
     /// Check if this RVA falls within this section.
+    #[must_use]
     pub fn contains_rva(&self, rva: u32) -> bool {
         let size = self.virtual_size.max(self.size_of_raw_data);
         rva.checked_sub(self.virtual_address)
@@ -109,6 +154,7 @@ impl SectionHeader {
     }
 
     /// Convert an RVA to file offset within this section.
+    #[must_use]
     pub fn rva_to_offset(&self, rva: u32) -> Option<u32> {
         let section_offset = rva.checked_sub(self.virtual_address)?;
         if self.pointer_to_raw_data == 0 || section_offset >= self.size_of_raw_data {
@@ -118,6 +164,10 @@ impl SectionHeader {
     }
 
     /// Parse a section header from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
@@ -141,11 +191,21 @@ impl SectionHeader {
     }
 
     /// Write the section header to a buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `buf` is shorter than [`Self::SIZE`].
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
-        if buf.len() < Self::SIZE {
+        let Some(dest) = buf.get_mut(..Self::SIZE) else {
             return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
-        }
+        };
+        dest.copy_from_slice(&self.encode());
+        Ok(())
+    }
 
+    /// Encode the header into its 40-byte on-disk representation.
+    fn encode(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
         buf[0..8].copy_from_slice(&self.name);
         buf[8..12].copy_from_slice(&self.virtual_size.to_le_bytes());
         buf[12..16].copy_from_slice(&self.virtual_address.to_le_bytes());
@@ -156,11 +216,15 @@ impl SectionHeader {
         buf[32..34].copy_from_slice(&self.number_of_relocations.to_le_bytes());
         buf[34..36].copy_from_slice(&self.number_of_linenumbers.to_le_bytes());
         buf[36..40].copy_from_slice(&self.characteristics.to_le_bytes());
-
-        Ok(())
+        buf
     }
 
     /// Parse a section header from a positional reader at the given offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reader cannot supply [`Self::SIZE`] bytes at
+    /// `offset`.
     pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
         let mut buf = [0u8; Self::SIZE];
         reader.read_exact_at(offset, &mut buf)?;
@@ -168,6 +232,11 @@ impl SectionHeader {
     }
 
     /// Read multiple section headers from a positional reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a header offset overflows `u64` or if the reader
+    /// cannot supply `count` consecutive headers starting at `offset`.
     pub fn read_sections<R: ReadAt>(reader: &R, offset: u64, count: usize) -> Result<Vec<Self>> {
         let mut sections = Vec::with_capacity(count);
         for i in 0..count {
@@ -184,10 +253,9 @@ impl SectionHeader {
     }
 
     /// Serialize to a byte vector.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; Self::SIZE];
-        self.write(&mut buf).expect("buffer size is correct");
-        buf
+        self.encode().to_vec()
     }
 }
 
@@ -206,6 +274,7 @@ pub struct Section {
 
 impl Section {
     /// Create a new section with the given name and characteristics.
+    #[must_use]
     pub fn new(name: &str, characteristics: u32) -> Self {
         let mut header = SectionHeader {
             name: [0u8; 8],
@@ -229,6 +298,7 @@ impl Section {
     }
 
     /// Create a section from a header and data.
+    #[must_use]
     pub fn from_header_and_data(header: SectionHeader, data: Vec<u8>) -> Self {
         Self {
             header,
@@ -256,12 +326,22 @@ impl Section {
     }
 
     /// Set the section data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len()` exceeds `u32::MAX`; use
+    /// [`Self::try_set_data`] for a fallible update.
     pub fn set_data(&mut self, data: Vec<u8>) {
         self.try_set_data(data)
             .expect("section data exceeds u32: use try_set_data() for fallible updates");
     }
 
     /// Set section data after checking that its virtual size is representable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data.len()` exceeds `u32::MAX`; the section is
+    /// left unchanged in that case.
     pub fn try_set_data(&mut self, data: Vec<u8>) -> Result<()> {
         let size = u32::try_from(data.len())
             .map_err(|_| Error::invalid_section("section data exceeds u32"))?;
@@ -273,12 +353,22 @@ impl Section {
     }
 
     /// Append data to the section.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the combined data length exceeds `u32::MAX`; use
+    /// [`Self::try_append_data`] for a fallible update.
     pub fn append_data(&mut self, data: &[u8]) {
         self.try_append_data(data)
             .expect("section data exceeds u32: use try_append_data() for fallible updates");
     }
 
     /// Append bytes and return their section-relative offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the combined data length exceeds `u32::MAX`; the
+    /// section is left unchanged in that case.
     pub fn try_append_data(&mut self, data: &[u8]) -> Result<u32> {
         let offset = u32::try_from(self.data.len())
             .map_err(|_| Error::invalid_section("section data exceeds u32"))?;
@@ -300,6 +390,11 @@ impl Section {
     /// Mapped-image parsing retains virtual zero-fill in `data` while
     /// remembering the smaller original raw extent. Call this after editing
     /// that virtual tail when it should be emitted to a rebuilt file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len()` exceeds `u32::MAX`, which can only happen when
+    /// `data` was replaced directly with an oversized buffer.
     pub fn materialize_virtual_data(&mut self) {
         self.mapped_raw_size = None;
         self.mapped_data_len = 0;
@@ -314,11 +409,13 @@ impl Section {
     }
 
     /// Check if an RVA falls within this section.
+    #[must_use]
     pub fn contains_rva(&self, rva: u32) -> bool {
         self.header.contains_rva(rva)
     }
 
     /// Get data at an RVA offset within this section.
+    #[must_use]
     pub fn data_at_rva(&self, rva: u32, len: usize) -> Option<&[u8]> {
         if !self.contains_rva(rva) {
             return None;

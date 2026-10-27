@@ -81,7 +81,7 @@ for dll in &image.imports()?.dlls {
 
 // Edits go through the normalized image while PeFile retains raw-only state.
 let imports = file.image().imports()?;
-file.image_mut().update_imports(imports, None)?;
+file.image_mut().update_imports(&imports, None)?;
 file.write_to_file("modified.exe")?;
 # Ok::<(), portex::Error>(())
 ```
@@ -113,7 +113,7 @@ let partial = PeImage::parse_with_options(
 
 assert_eq!(raw.source_layout(), SourceLayout::File);
 assert_eq!(mapped.source_layout(), SourceLayout::Mapped);
-assert_eq!(relocated.runtime_image_base(), Some(0x0000_7ff6_0000_0000));
+assert_eq!(relocated.runtime_image_base(), 0x0000_7ff6_0000_0000);
 # Ok::<(), portex::Error>(())
 ```
 
@@ -210,8 +210,10 @@ mise run precommit
 
 The hooks run rustfmt and Clippy over every crate target with both the full
 feature set and `no_std + alloc`, and lint the separate fuzz package. CI runs
-the same matrix plus both test and rustdoc feature modes. Warnings are denied
-by each package manifest, so the policy also applies to direct Cargo commands.
+the same matrix plus both test and rustdoc feature modes. Each package manifest
+denies warnings, Clippy's pedantic group, missing docs, and unsafe code (the
+only exception is `BaseAddressReader`), so the policy also applies to direct
+Cargo commands. The Rust examples in this README compile as doctests.
 
 Fuzz targets live under `fuzz/` and can be run with `cargo-fuzz` on
 Linux/macOS or WSL:

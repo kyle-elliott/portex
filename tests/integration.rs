@@ -12,7 +12,7 @@ use portex::{
     tls::TlsInfo,
 };
 
-/// Test that PeBuilder creates a valid PE that can be parsed back.
+/// Test that `PeBuilder` creates a valid PE that can be parsed back.
 #[test]
 fn test_pe_builder_roundtrip() {
     // Create a minimal 64-bit PE
@@ -44,14 +44,14 @@ fn test_pe_builder_roundtrip() {
     assert_eq!(parsed.sections[1].name(), ".data");
 }
 
-/// Test that PeBuilder creates a valid 32-bit PE.
+/// Test that `PeBuilder` creates a valid 32-bit PE.
 #[test]
 fn test_pe_builder_32bit_roundtrip() {
     let pe = PeBuilder::new()
         .machine(MachineType::I386)
         .subsystem(Subsystem::WindowsGui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0x90; 0x100], 0x60000020)
+        .add_section(".text", vec![0x90; 0x100], 0x6000_0020)
         .build();
 
     let bytes = pe.build();
@@ -69,8 +69,8 @@ fn test_import_table_roundtrip() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
-        .add_section(".rdata", vec![0x00; 0x1000], 0x40000040) // INITIALIZED_DATA | READ
+        .add_section(".text", vec![0xCC; 0x200], 0x6000_0020)
+        .add_section(".rdata", vec![0x00; 0x1000], 0x4000_0040) // INITIALIZED_DATA | READ
         .build();
 
     // Create import table with proper ImportThunk types
@@ -97,7 +97,7 @@ fn test_import_table_roundtrip() {
     );
 
     // Update imports
-    pe.update_imports(imports.clone(), None)
+    pe.update_imports(&imports, None)
         .expect("Failed to update imports");
 
     // Rebuild and re-parse
@@ -116,8 +116,8 @@ fn test_export_table_roundtrip() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
-        .add_section(".rdata", vec![0x00; 0x1000], 0x40000040)
+        .add_section(".text", vec![0xCC; 0x200], 0x6000_0020)
+        .add_section(".rdata", vec![0x00; 0x1000], 0x4000_0040)
         .build();
 
     // Create export table
@@ -126,7 +126,7 @@ fn test_export_table_roundtrip() {
     exports.add_export(Some("TestFunction1"), 0x1000);
     exports.add_export(Some("TestFunction2"), 0x1010);
 
-    pe.update_exports(exports, None)
+    pe.update_exports(&exports, None)
         .expect("Failed to update exports");
 
     let bytes = pe.build();
@@ -143,8 +143,8 @@ fn test_relocation_roundtrip() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
-        .add_section(".reloc", vec![0x00; 0x1000], 0x42000040) // DISCARDABLE | INITIALIZED_DATA | READ
+        .add_section(".text", vec![0xCC; 0x200], 0x6000_0020)
+        .add_section(".reloc", vec![0x00; 0x1000], 0x4200_0040) // DISCARDABLE | INITIALIZED_DATA | READ
         .build();
 
     // Create relocation table
@@ -153,14 +153,14 @@ fn test_relocation_roundtrip() {
     relocs.add_relocation(0x1008, RelocationType::Dir64);
     relocs.add_relocation(0x2000, RelocationType::HighLow);
 
-    pe.update_relocations(relocs, None)
+    pe.update_relocations(&relocs, None)
         .expect("Failed to update relocations");
 
     let bytes = pe.build();
     let parsed = PeImage::parse(&bytes).expect("Failed to parse PE with relocations");
 
     let parsed_relocs = parsed.relocations().expect("Failed to get relocations");
-    assert!(!parsed_relocs.blocks.is_empty());
+    assert_ne!(parsed_relocs.blocks.len(), 0);
 }
 
 /// Test exception directory roundtrip.
@@ -170,8 +170,8 @@ fn test_exception_roundtrip() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x400], 0x60000020)
-        .add_section(".pdata", vec![0x00; 0x1000], 0x40000040)
+        .add_section(".text", vec![0xCC; 0x400], 0x6000_0020)
+        .add_section(".pdata", vec![0x00; 0x1000], 0x4000_0040)
         .build();
 
     // Create exception directory
@@ -198,8 +198,8 @@ fn test_tls_roundtrip() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
-        .add_section(".tls", vec![0x00; 0x1000], 0xC0000040) // INITIALIZED_DATA | READ | WRITE
+        .add_section(".text", vec![0xCC; 0x200], 0x6000_0020)
+        .add_section(".tls", vec![0x00; 0x1000], 0xC000_0040) // INITIALIZED_DATA | READ | WRITE
         .build();
 
     // Create TLS info with default (no callbacks)
@@ -223,8 +223,8 @@ fn test_debug_roundtrip() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
-        .add_section(".rdata", vec![0x00; 0x1000], 0x40000040)
+        .add_section(".text", vec![0xCC; 0x200], 0x6000_0020)
+        .add_section(".rdata", vec![0x00; 0x1000], 0x4000_0040)
         .build();
 
     // Add CodeView debug info using update_debug_codeview
@@ -247,21 +247,21 @@ fn test_debug_roundtrip() {
     assert!(debug_info.is_some());
 }
 
-/// Test LoadConfig roundtrip.
+/// Test `LoadConfig` roundtrip.
 #[test]
 fn test_loadconfig_roundtrip() {
     let mut pe = PeBuilder::new()
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
-        .add_section(".rdata", vec![0x00; 0x2000], 0x40000040)
+        .add_section(".text", vec![0xCC; 0x200], 0x6000_0020)
+        .add_section(".rdata", vec![0x00; 0x2000], 0x4000_0040)
         .build();
 
     // Create LoadConfig with security cookie
     let config64 = LoadConfigDirectory64 {
-        size: LoadConfigDirectory64::MIN_SIZE as u32,
-        security_cookie: 0x140002000, // VA of security cookie
+        size: u32::try_from(LoadConfigDirectory64::MIN_SIZE).unwrap(),
+        security_cookie: 0x0001_4000_2000, // VA of security cookie
         ..Default::default()
     };
     let loadconfig = LoadConfigDirectory::Config64(config64);
@@ -286,8 +286,8 @@ fn test_loadconfig_reads_the_structure_size_of_a_short_32bit_directory() {
         .machine(MachineType::I386)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
-        .add_section(".rdata", vec![0x00; 0x200], 0x40000040)
+        .add_section(".text", vec![0xCC; 0x200], 0x6000_0020)
+        .add_section(".rdata", vec![0x00; 0x200], 0x4000_0040)
         .build();
     let config = LoadConfigDirectory32 {
         size: 0xc0,
@@ -322,13 +322,13 @@ fn test_section_management() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x100], 0x60000020)
+        .add_section(".text", vec![0xCC; 0x100], 0x6000_0020)
         .build();
 
     assert_eq!(pe.sections.len(), 1);
 
     // Add a new section (note: returns () not Result)
-    pe.add_section_with_data(".data", vec![0x00; 0x100], 0xC0000040);
+    pe.add_section_with_data(".data", vec![0x00; 0x100], 0xC000_0040);
 
     assert_eq!(pe.sections.len(), 2);
     assert!(pe.find_section(".data").is_some());
@@ -350,8 +350,8 @@ fn test_multiple_updates_succeed() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x1000], 0x60000020)
-        .add_section(".rdata", vec![0x00; 0x2000], 0x40000040)
+        .add_section(".text", vec![0xCC; 0x1000], 0x6000_0020)
+        .add_section(".rdata", vec![0x00; 0x2000], 0x4000_0040)
         .build();
 
     // Add imports
@@ -363,14 +363,14 @@ fn test_multiple_updates_succeed() {
             name: "GetLastError".to_string(),
         }],
     );
-    pe.update_imports(imports, None)
+    pe.update_imports(&imports, None)
         .expect("Failed to add imports");
 
     // Add exports
     let mut exports = ExportTable::default();
     exports.set_dll_name("test.dll");
     exports.add_export(Some("TestFunc"), 0x1000);
-    pe.update_exports(exports, None)
+    pe.update_exports(&exports, None)
         .expect("Failed to add exports");
 
     // Rebuild
@@ -378,9 +378,9 @@ fn test_multiple_updates_succeed() {
     let parsed = PeImage::parse(&bytes).expect("Failed to parse modified PE");
 
     // Verify imports were written
-    assert!(!parsed.imports().expect("imports").dlls.is_empty());
+    assert_ne!(parsed.imports().expect("imports").dlls.len(), 0);
     // Verify exports were written
-    assert!(!parsed.exports().expect("exports").exports.is_empty());
+    assert_ne!(parsed.exports().expect("exports").exports.len(), 0);
 }
 
 /// Test that we can parse and validate the built PE.
@@ -390,8 +390,8 @@ fn test_pe_validation() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
-        .add_section(".data", vec![0x00; 0x100], 0xC0000040)
+        .add_section(".text", vec![0xCC; 0x200], 0x6000_0020)
+        .add_section(".data", vec![0x00; 0x100], 0xC000_0040)
         .build();
 
     let bytes = pe.build();
@@ -404,6 +404,6 @@ fn test_pe_validation() {
     // (there may be warnings for things like missing characteristics)
     for issue in &issues {
         // Just check we don't panic when validating
-        let _ = format!("{:?}", issue);
+        let _ = format!("{issue:?}");
     }
 }

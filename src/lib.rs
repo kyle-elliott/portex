@@ -131,7 +131,8 @@ pub use export::{
 pub use import::{ImportDescriptor, ImportTable, ImportTableBuilder, ImportThunk, ImportedDll};
 pub use layout::LayoutConfig;
 pub use loadconfig::{
-    LoadConfigBuilder, LoadConfigDirectory, LoadConfigDirectory32, LoadConfigDirectory64,
+    CfgSettings, LoadConfigBuilder, LoadConfigDirectory, LoadConfigDirectory32,
+    LoadConfigDirectory64,
 };
 pub use optional::{OptionalHeader, OptionalHeader32, OptionalHeader64, Subsystem};
 pub use pe::{MissingSectionData, ParseOptions, PeHeaders, PeImage, SourceLayout};
@@ -152,3 +153,9 @@ pub use security::{
 };
 pub use tls::{TlsBuilder, TlsDirectory, TlsDirectory32, TlsDirectory64, TlsInfo};
 pub use validation::{ValidationCode, ValidationIssue, ValidationLevel, ValidationResult};
+
+// Compiles the README's Rust examples as doctests so they track the API. The
+// quick start uses the `std` file helpers.
+#[cfg(all(doctest, feature = "std"))]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

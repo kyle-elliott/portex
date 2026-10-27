@@ -1,9 +1,17 @@
-use super::*;
+use super::PeImage;
+use crate::prelude::*;
+use crate::{Error, Result};
 
 impl PeImage {
     /// Parse the bound import directory.
     ///
     /// Bound imports are a legacy optimization for faster DLL loading.
+    /// Returns `Ok(None)` if the bound import data directory is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be read at its RVA or its
+    /// `IMAGE_BOUND_IMPORT_DESCRIPTOR` entries are malformed.
     pub fn bound_imports(&self) -> Result<Option<crate::bound_import::BoundImportDirectory>> {
         use crate::data_dir::DataDirectoryType;
 
@@ -26,10 +34,18 @@ impl PeImage {
     /// Update bound imports: tries in-place replacement first, otherwise appends to target section.
     ///
     /// Bound imports are a legacy optimization that pre-resolves import addresses at link time.
-    /// Returns the RVA where the bound import data was written.
+    /// Returns the RVA where the bound import data was written, or 0 if
+    /// `directory` has no descriptors and the directory was cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no bound import slot
+    /// and cannot be extended, if the descriptors cannot be serialized, if the
+    /// target section does not exist, or if appending the data breaks the image
+    /// layout.
     pub fn update_bound_imports(
         &mut self,
-        directory: crate::bound_import::BoundImportDirectory,
+        directory: &crate::bound_import::BoundImportDirectory,
         target_section: Option<&str>,
     ) -> Result<u32> {
         use crate::data_dir::DataDirectoryType;
@@ -40,12 +56,11 @@ impl PeImage {
         }
         self.ensure_data_directory_slot(DataDirectoryType::BoundImport)?;
 
-        let builder = crate::bound_import::BoundImportBuilder::new();
-        let (data, encoded_size) = builder.try_build(&directory)?;
+        let (data, encoded_size) = crate::bound_import::BoundImportBuilder::try_build(directory)?;
         let required_size = data.len();
 
         // Check if we can replace in-place
-        let existing_dir = self.data_directory(DataDirectoryType::BoundImport).cloned();
+        let existing_dir = self.data_directory(DataDirectoryType::BoundImport).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
             && dir.size as usize >= required_size
@@ -61,7 +76,7 @@ impl PeImage {
 
         // Find target section
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if let Some(ref dir) = existing_dir
                     && dir.is_present()
@@ -81,9 +96,8 @@ impl PeImage {
             .unwrap_or_else(|| ".rdata".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(section_name));
         };
 
         let append_rva = self.prepare_section_append(section_idx)?;
@@ -97,12 +111,22 @@ impl PeImage {
     /// Parse the delay-load import directory.
     ///
     /// Delay-loaded DLLs are loaded on first use, not at startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delay-load descriptors, their name tables, or
+    /// their strings cannot be read from the image or are malformed.
     pub fn delay_imports(&self) -> Result<crate::delay_import::DelayImportDirectory> {
         self.delay_imports_at_image_base(self.runtime_image_base())
     }
 
     /// Parse delay-load imports using an explicit base for legacy VA-based
     /// descriptors. Modern descriptors use RVAs and are unaffected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delay-load descriptors, their name tables, or
+    /// their strings cannot be read from the image or are malformed.
     pub fn delay_imports_at_image_base(
         &self,
         runtime_image_base: u64,
@@ -134,7 +158,15 @@ impl PeImage {
     /// Update delay imports: tries in-place replacement first, otherwise appends to target section.
     ///
     /// Delay-load imports allow DLLs to be loaded on first use rather than at startup.
-    /// Returns the RVA where the delay import data was written.
+    /// Returns the RVA where the delay import data was written, or 0 if
+    /// `directory` has no DLLs and the directory was cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no delay import slot
+    /// and cannot be extended, if the target section does not exist, if the
+    /// descriptors cannot be serialized, or if appending the data breaks the
+    /// image layout.
     pub fn update_delay_imports(
         &mut self,
         directory: &crate::delay_import::DelayImportDirectory,
@@ -155,9 +187,9 @@ impl PeImage {
         );
 
         // Find target section first to get the base RVA
-        let existing_dir = self.data_directory(DataDirectoryType::DelayImport).cloned();
+        let existing_dir = self.data_directory(DataDirectoryType::DelayImport).copied();
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if let Some(ref dir) = existing_dir
                     && dir.is_present()
@@ -179,9 +211,8 @@ impl PeImage {
             .unwrap_or_else(|| ".rdata".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(section_name));
         };
 
         // Calculate the RVA where we'll place the data
@@ -223,6 +254,11 @@ impl PeImage {
     /// Parse the resource directory (metadata only).
     ///
     /// To also load the actual resource data, use `resources_with_data()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resource directory tree cannot be read from the
+    /// image or is malformed.
     pub fn resources(&self) -> Result<crate::resource::ResourceDirectory> {
         use crate::data_dir::DataDirectoryType;
 
@@ -241,6 +277,11 @@ impl PeImage {
     /// Parse the resource directory including resource data.
     ///
     /// This is slower than `resources()` but loads each resource's data into the `Resource::data` field.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resource directory tree or any resource data
+    /// entry cannot be read from the image or is malformed.
     pub fn resources_with_data(&self) -> Result<crate::resource::ResourceDirectory> {
         use crate::data_dir::DataDirectoryType;
 
@@ -261,9 +302,19 @@ impl PeImage {
     }
 
     /// Update relocations: tries in-place replacement first, otherwise appends to target section.
+    ///
+    /// Returns the RVA where the base relocation blocks were written, or 0 if
+    /// `relocs` has no blocks and the directory was cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no base relocation
+    /// slot and cannot be extended, if the blocks cannot be serialized or
+    /// exceed `u32`, if the target section does not exist, or if appending the
+    /// data breaks the image layout.
     pub fn update_relocations(
         &mut self,
-        relocs: crate::reloc::RelocationTable,
+        relocs: &crate::reloc::RelocationTable,
         target_section: Option<&str>,
     ) -> Result<u32> {
         use crate::data_dir::DataDirectoryType;
@@ -280,7 +331,7 @@ impl PeImage {
             .map_err(|_| Error::invalid_data_directory("relocation table exceeds u32"))?;
 
         // Check if we can replace in-place
-        let existing_dir = self.data_directory(DataDirectoryType::BaseReloc).cloned();
+        let existing_dir = self.data_directory(DataDirectoryType::BaseReloc).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
             && dir.size as usize >= required_size
@@ -296,7 +347,7 @@ impl PeImage {
 
         // Find target section
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if let Some(ref dir) = existing_dir
                     && dir.is_present()
@@ -318,9 +369,8 @@ impl PeImage {
             .unwrap_or_else(|| ".reloc".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(section_name));
         };
 
         let append_rva = self.prepare_section_append(section_idx)?;
@@ -334,7 +384,15 @@ impl PeImage {
     /// Update resources: tries in-place replacement first, otherwise appends to target section.
     ///
     /// The directory must have been parsed with `resources_with_data()` so that
-    /// the resource data is available.
+    /// the resource data is available. Returns the RVA where the resource
+    /// directory was written, or 0 if it has no resources and was cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no resource slot and
+    /// cannot be extended, if resource data was not loaded, if the tree cannot
+    /// be serialized, if the target section does not exist, or if appending
+    /// the data breaks the image layout.
     pub fn update_resources(
         &mut self,
         directory: &crate::resource::ResourceDirectory,
@@ -356,7 +414,7 @@ impl PeImage {
         let required_size = builder.try_calculate_size()?;
 
         // Check if we can replace in-place
-        let existing_dir = self.data_directory(DataDirectoryType::Resource).cloned();
+        let existing_dir = self.data_directory(DataDirectoryType::Resource).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
             && dir.size as usize >= required_size
@@ -370,7 +428,7 @@ impl PeImage {
 
         // Find target section
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if let Some(ref dir) = existing_dir
                     && dir.is_present()
@@ -392,9 +450,8 @@ impl PeImage {
             .unwrap_or_else(|| ".rsrc".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(section_name));
         };
 
         let append_rva = self.prepare_section_append(section_idx)?;
@@ -410,6 +467,15 @@ impl PeImage {
     ///
     /// Use this when building new resources rather than modifying existing ones.
     /// For modifying existing resources, use `update_resources()` with a parsed `ResourceDirectory`.
+    /// Returns the RVA where the resource directory was written, or 0 if the
+    /// builder is empty and the directory was cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no resource slot and
+    /// cannot be extended, if the tree cannot be serialized, if the target
+    /// section does not exist, or if appending the data breaks the image
+    /// layout.
     pub fn update_resources_from_builder(
         &mut self,
         builder: &crate::resource::ResourceBuilder,
@@ -425,7 +491,7 @@ impl PeImage {
         self.ensure_data_directory_slot(DataDirectoryType::Resource)?;
 
         // Check if we can replace in-place
-        let existing_dir = self.data_directory(DataDirectoryType::Resource).cloned();
+        let existing_dir = self.data_directory(DataDirectoryType::Resource).copied();
         if let Some(ref dir) = existing_dir
             && dir.is_present()
             && dir.size as usize >= required_size
@@ -439,7 +505,7 @@ impl PeImage {
 
         // Find target section
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if let Some(ref dir) = existing_dir
                     && dir.is_present()
@@ -461,9 +527,8 @@ impl PeImage {
             .unwrap_or_else(|| ".rsrc".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(section_name));
         };
 
         let append_rva = self.prepare_section_append(section_idx)?;

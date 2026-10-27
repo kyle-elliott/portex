@@ -44,6 +44,7 @@ pub struct ErrorContext {
 
 impl ErrorContext {
     /// Create an empty context.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             file_offset: None,
@@ -54,30 +55,35 @@ impl ErrorContext {
     }
 
     /// Set the file offset.
+    #[must_use]
     pub fn at_offset(mut self, offset: u64) -> Self {
         self.file_offset = Some(offset);
         self
     }
 
     /// Set the RVA.
+    #[must_use]
     pub fn at_rva(mut self, rva: u32) -> Self {
         self.rva = Some(rva);
         self
     }
 
     /// Set the structure name.
+    #[must_use]
     pub fn in_structure(mut self, name: impl Into<String>) -> Self {
         self.structure = Some(name.into());
         self
     }
 
     /// Set additional details.
+    #[must_use]
     pub fn with_details(mut self, details: impl Into<String>) -> Self {
         self.details = Some(details.into());
         self
     }
 
     /// Check if context has any information.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.file_offset.is_none()
             && self.rva.is_none()
@@ -96,13 +102,13 @@ impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut parts = Vec::new();
         if let Some(offset) = self.file_offset {
-            parts.push(format!("offset {:#x}", offset));
+            parts.push(format!("offset {offset:#x}"));
         }
         if let Some(rva) = self.rva {
-            parts.push(format!("RVA {:#x}", rva));
+            parts.push(format!("RVA {rva:#x}"));
         }
         if let Some(ref structure) = self.structure {
-            parts.push(format!("in {}", structure));
+            parts.push(format!("in {structure}"));
         }
         if let Some(ref details) = self.details {
             parts.push(details.clone());
@@ -136,13 +142,23 @@ pub enum ErrorKind {
     /// Invalid optional header magic.
     InvalidOptionalHeaderMagic(u16),
     /// Buffer too small to contain expected data.
-    BufferTooSmall { expected: usize, actual: usize },
+    BufferTooSmall {
+        /// Number of bytes required.
+        expected: usize,
+        /// Number of bytes available.
+        actual: usize,
+    },
     /// Invalid section data.
     InvalidSection(String),
     /// Invalid data directory.
     InvalidDataDirectory(String),
     /// Offset out of bounds.
-    OffsetOutOfBounds { offset: usize, size: usize },
+    OffsetOutOfBounds {
+        /// Offending offset.
+        offset: usize,
+        /// Size of the region the offset was checked against.
+        size: usize,
+    },
     /// Invalid RVA (could not read at address).
     InvalidRva(u32),
     /// Invalid UTF-8 string.
@@ -153,6 +169,7 @@ pub enum ErrorKind {
 
 impl Error {
     /// Create a new error with the given kind.
+    #[must_use]
     pub fn new(kind: ErrorKind) -> Self {
         Self {
             kind,
@@ -161,12 +178,14 @@ impl Error {
     }
 
     /// Add context to this error.
+    #[must_use]
     pub fn with_context(mut self, context: ErrorContext) -> Self {
         self.context = Some(context);
         self
     }
 
     /// Add file offset context.
+    #[must_use]
     pub fn at_offset(mut self, offset: u64) -> Self {
         let ctx = self.context.take().unwrap_or_default();
         self.context = Some(ctx.at_offset(offset));
@@ -174,6 +193,7 @@ impl Error {
     }
 
     /// Add RVA context.
+    #[must_use]
     pub fn at_rva(mut self, rva: u32) -> Self {
         let ctx = self.context.take().unwrap_or_default();
         self.context = Some(ctx.at_rva(rva));
@@ -181,6 +201,7 @@ impl Error {
     }
 
     /// Add structure name context.
+    #[must_use]
     pub fn in_structure(mut self, name: impl Into<String>) -> Self {
         let ctx = self.context.take().unwrap_or_default();
         self.context = Some(ctx.in_structure(name));
@@ -188,63 +209,73 @@ impl Error {
     }
 
     /// Get the context if present.
+    #[must_use]
     pub fn context(&self) -> Option<&ErrorContext> {
         self.context.as_ref()
     }
 
     /// Get the error kind.
+    #[must_use]
     pub fn kind(&self) -> &ErrorKind {
         &self.kind
     }
 
     // Convenience constructors for common errors
 
-    /// Create an InvalidDosSignature error.
+    /// Create an `InvalidDosSignature` error.
+    #[must_use]
     pub fn invalid_dos_signature() -> Self {
         Self::new(ErrorKind::InvalidDosSignature)
     }
 
-    /// Create an InvalidPeSignature error.
+    /// Create an `InvalidPeSignature` error.
+    #[must_use]
     pub fn invalid_pe_signature() -> Self {
         Self::new(ErrorKind::InvalidPeSignature)
     }
 
-    /// Create an InvalidMachineType error.
+    /// Create an `InvalidMachineType` error.
+    #[must_use]
     pub fn invalid_machine_type(machine: u16) -> Self {
         Self::new(ErrorKind::InvalidMachineType(machine))
     }
 
-    /// Create an InvalidOptionalHeaderMagic error.
+    /// Create an `InvalidOptionalHeaderMagic` error.
+    #[must_use]
     pub fn invalid_optional_header_magic(magic: u16) -> Self {
         Self::new(ErrorKind::InvalidOptionalHeaderMagic(magic))
     }
 
-    /// Create a BufferTooSmall error.
+    /// Create a `BufferTooSmall` error.
+    #[must_use]
     pub fn buffer_too_small(expected: usize, actual: usize) -> Self {
         Self::new(ErrorKind::BufferTooSmall { expected, actual })
     }
 
-    /// Create an InvalidSection error.
+    /// Create an `InvalidSection` error.
     pub fn invalid_section(msg: impl Into<String>) -> Self {
         Self::new(ErrorKind::InvalidSection(msg.into()))
     }
 
-    /// Create an InvalidDataDirectory error.
+    /// Create an `InvalidDataDirectory` error.
     pub fn invalid_data_directory(msg: impl Into<String>) -> Self {
         Self::new(ErrorKind::InvalidDataDirectory(msg.into()))
     }
 
-    /// Create an OffsetOutOfBounds error.
+    /// Create an `OffsetOutOfBounds` error.
+    #[must_use]
     pub fn offset_out_of_bounds(offset: usize, size: usize) -> Self {
         Self::new(ErrorKind::OffsetOutOfBounds { offset, size })
     }
 
-    /// Create an InvalidRva error.
+    /// Create an `InvalidRva` error.
+    #[must_use]
     pub fn invalid_rva(rva: u32) -> Self {
         Self::new(ErrorKind::InvalidRva(rva))
     }
 
-    /// Create an InvalidUtf8 error.
+    /// Create an `InvalidUtf8` error.
+    #[must_use]
     pub fn invalid_utf8() -> Self {
         Self::new(ErrorKind::InvalidUtf8)
     }
@@ -292,7 +323,7 @@ impl fmt::Display for Error {
         if let Some(ref ctx) = self.context
             && !ctx.is_empty()
         {
-            write!(f, " ({})", ctx)?;
+            write!(f, " ({ctx})")?;
         }
         Ok(())
     }

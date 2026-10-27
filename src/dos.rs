@@ -7,13 +7,17 @@ use crate::{Error, Result};
 /// DOS "MZ" signature.
 pub const DOS_SIGNATURE: u16 = 0x5A4D; // "MZ"
 
-/// DOS Header (IMAGE_DOS_HEADER).
+/// DOS Header (`IMAGE_DOS_HEADER`).
 ///
 /// The DOS header is the first structure in a PE file,
 /// located at offset 0. It contains the DOS stub and
 /// a pointer to the PE header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the `e_*` members of IMAGE_DOS_HEADER"
+)]
 pub struct DosHeader {
     /// Magic number ("MZ" = 0x5A4D).
     pub e_magic: u16,
@@ -60,6 +64,11 @@ impl DosHeader {
     pub const SIZE: usize = 64;
 
     /// Parse a DOS header from a byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `data` is shorter than [`Self::SIZE`],
+    /// or an invalid-DOS-signature error if `e_magic` is not [`DOS_SIGNATURE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
@@ -110,11 +119,22 @@ impl DosHeader {
     }
 
     /// Write the DOS header to a byte buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `buf` is shorter than [`Self::SIZE`].
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
-        if buf.len() < Self::SIZE {
-            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
-        }
+        let len = buf.len();
+        let out = buf
+            .first_chunk_mut::<{ Self::SIZE }>()
+            .ok_or_else(|| Error::buffer_too_small(Self::SIZE, len))?;
+        *out = self.encode();
+        Ok(())
+    }
 
+    /// Encode the header into its on-disk little-endian layout.
+    fn encode(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
         buf[0..2].copy_from_slice(&self.e_magic.to_le_bytes());
         buf[2..4].copy_from_slice(&self.e_cblp.to_le_bytes());
         buf[4..6].copy_from_slice(&self.e_cp.to_le_bytes());
@@ -138,11 +158,15 @@ impl DosHeader {
             buf[40 + i * 2..42 + i * 2].copy_from_slice(&val.to_le_bytes());
         }
         buf[60..64].copy_from_slice(&self.e_lfanew.to_le_bytes());
-
-        Ok(())
+        buf
     }
 
     /// Parse a DOS header from a positional reader at the given offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::SIZE`] bytes cannot be read at `offset`,
+    /// or any error from [`Self::parse`].
     pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
         let mut buf = [0u8; Self::SIZE];
         reader.read_exact_at(offset, &mut buf)?;
@@ -150,10 +174,9 @@ impl DosHeader {
     }
 
     /// Serialize the DOS header to a byte vector.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; Self::SIZE];
-        self.write(&mut buf).expect("buffer size is correct");
-        buf
+    #[must_use]
+    pub fn to_bytes(self) -> Vec<u8> {
+        self.encode().to_vec()
     }
 }
 

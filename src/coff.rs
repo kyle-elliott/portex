@@ -5,7 +5,7 @@ use crate::reader::ReadAt;
 use crate::{Error, Result};
 
 /// PE signature "PE\0\0".
-pub const PE_SIGNATURE: u32 = 0x00004550;
+pub const PE_SIGNATURE: u32 = 0x0000_4550;
 
 /// Machine type constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +77,8 @@ pub enum MachineType {
 }
 
 impl MachineType {
-    /// Convert from raw u16 value.
+    /// Convert from a raw `IMAGE_FILE_HEADER.Machine` value.
+    #[must_use]
     pub fn from_u16(value: u16) -> Option<Self> {
         match value {
             0x0000 => Some(Self::Unknown),
@@ -116,6 +117,7 @@ impl MachineType {
     }
 
     /// Whether this machine normally uses a PE32+ optional header.
+    #[must_use]
     pub const fn is_64_bit(self) -> bool {
         matches!(
             self,
@@ -133,6 +135,7 @@ impl MachineType {
     }
 
     /// Whether this machine normally uses a PE32 optional header.
+    #[must_use]
     pub const fn is_32_bit(self) -> bool {
         !matches!(self, Self::Unknown) && !self.is_64_bit()
     }
@@ -172,7 +175,7 @@ pub mod characteristics {
     pub const BYTES_REVERSED_HI: u16 = 0x8000;
 }
 
-/// COFF File Header (IMAGE_FILE_HEADER).
+/// COFF File Header (`IMAGE_FILE_HEADER`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct CoffHeader {
@@ -197,6 +200,10 @@ impl CoffHeader {
     pub const SIZE: usize = 20;
 
     /// Parse a COFF header from a byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
@@ -214,11 +221,22 @@ impl CoffHeader {
     }
 
     /// Write the COFF header to a byte buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `buf` is shorter than [`Self::SIZE`].
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
-        if buf.len() < Self::SIZE {
-            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
-        }
+        let len = buf.len();
+        let out = buf
+            .first_chunk_mut::<{ Self::SIZE }>()
+            .ok_or_else(|| Error::buffer_too_small(Self::SIZE, len))?;
+        *out = self.encode();
+        Ok(())
+    }
 
+    /// Encode the header into its on-disk little-endian layout.
+    fn encode(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
         buf[0..2].copy_from_slice(&self.machine.to_le_bytes());
         buf[2..4].copy_from_slice(&self.number_of_sections.to_le_bytes());
         buf[4..8].copy_from_slice(&self.time_date_stamp.to_le_bytes());
@@ -226,26 +244,32 @@ impl CoffHeader {
         buf[12..16].copy_from_slice(&self.number_of_symbols.to_le_bytes());
         buf[16..18].copy_from_slice(&self.size_of_optional_header.to_le_bytes());
         buf[18..20].copy_from_slice(&self.characteristics.to_le_bytes());
-
-        Ok(())
+        buf
     }
 
     /// Get the machine type as an enum.
+    #[must_use]
     pub fn machine_type(&self) -> Option<MachineType> {
         MachineType::from_u16(self.machine)
     }
 
     /// Check if the file is a DLL.
+    #[must_use]
     pub fn is_dll(&self) -> bool {
         self.characteristics & characteristics::DLL != 0
     }
 
     /// Check if the file is executable.
+    #[must_use]
     pub fn is_executable(&self) -> bool {
         self.characteristics & characteristics::EXECUTABLE_IMAGE != 0
     }
 
     /// Parse a COFF header from a positional reader at the given offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::SIZE`] bytes cannot be read at `offset`.
     pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
         let mut buf = [0u8; Self::SIZE];
         reader.read_exact_at(offset, &mut buf)?;
@@ -253,14 +277,18 @@ impl CoffHeader {
     }
 
     /// Serialize to a byte vector.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; Self::SIZE];
-        self.write(&mut buf).expect("buffer size is correct");
-        buf
+    #[must_use]
+    pub fn to_bytes(self) -> Vec<u8> {
+        self.encode().to_vec()
     }
 }
 
-/// Verify PE signature at the given offset.
+/// Verify the `PE\0\0` signature at the given offset.
+///
+/// # Errors
+///
+/// Returns an error if the signature cannot be read at `offset`, or an
+/// invalid-PE-signature error if it does not equal [`PE_SIGNATURE`].
 pub fn verify_pe_signature<R: ReadAt>(reader: &R, offset: u64) -> Result<()> {
     let sig = reader.read_u32_at(offset)?;
     if sig != PE_SIGNATURE {
@@ -290,7 +318,7 @@ mod tests {
         let header = CoffHeader {
             machine: MachineType::Amd64 as u16,
             number_of_sections: 5,
-            time_date_stamp: 0x12345678,
+            time_date_stamp: 0x1234_5678,
             pointer_to_symbol_table: 0,
             number_of_symbols: 0,
             size_of_optional_header: 240,

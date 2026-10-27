@@ -22,7 +22,8 @@ pub use crate::import::{
     ImportDescriptor, ImportTable, ImportTableBuilder, ImportThunk, ImportedDll,
 };
 pub use crate::loadconfig::{
-    LoadConfigBuilder, LoadConfigDirectory, LoadConfigDirectory32, LoadConfigDirectory64,
+    CfgSettings, LoadConfigBuilder, LoadConfigDirectory, LoadConfigDirectory32,
+    LoadConfigDirectory64,
 };
 pub use crate::reloc::{
     RelocationBlock, RelocationBuilder, RelocationEntry, RelocationTable, RelocationType,

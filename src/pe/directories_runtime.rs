@@ -1,7 +1,16 @@
-use super::*;
+use super::PeImage;
+use crate::prelude::*;
+use crate::{Error, Result};
 
 impl PeImage {
-    /// Parse the TLS directory.
+    /// Parse the TLS directory (`IMAGE_TLS_DIRECTORY32`/`IMAGE_TLS_DIRECTORY64`).
+    ///
+    /// Returns `Ok(None)` if the TLS data directory is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TLS directory or its callback array cannot be
+    /// read from the image, or if the directory is malformed.
     pub fn tls(&self) -> Result<Option<crate::tls::TlsInfo>> {
         self.tls_at_image_base(self.runtime_image_base())
     }
@@ -10,6 +19,11 @@ impl PeImage {
     ///
     /// A loader relocates the VA fields in a mapped TLS directory. Pass the
     /// module's current base here when parsing an ASLR-relocated mapped image.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TLS directory or its callback array cannot be
+    /// read from the image, or if the directory is malformed.
     pub fn tls_at_image_base(
         &self,
         runtime_image_base: u64,
@@ -37,13 +51,19 @@ impl PeImage {
     /// Update the TLS directory.
     ///
     /// Creates or replaces the TLS directory with new data.
-    /// If target_section is None, uses ".rdata" or the last section.
+    /// If `target_section` is `None`, uses ".rdata" or the last section.
     ///
     /// # Arguments
     /// * `tls_info` - The TLS information to write
     /// * `target_section` - Optional section to place the TLS data
     ///
     /// Returns the RVA where the TLS directory was written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no TLS slot and cannot
+    /// be extended, if the target section does not exist, if the TLS data
+    /// cannot be serialized, or if appending it breaks the image layout.
     pub fn update_tls(
         &mut self,
         tls_info: &crate::tls::TlsInfo,
@@ -55,7 +75,7 @@ impl PeImage {
 
         // Find target section
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if self.section_by_name(".rdata").is_some() {
                     Some(".rdata".to_string())
@@ -66,9 +86,8 @@ impl PeImage {
             .unwrap_or_else(|| ".rdata".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(&section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(&section_name));
         };
 
         // Calculate append RVA
@@ -85,7 +104,14 @@ impl PeImage {
         Ok(append_rva)
     }
 
-    /// Parse the debug directory.
+    /// Parse the debug directory (`IMAGE_DEBUG_DIRECTORY[]`).
+    ///
+    /// Returns `Ok(None)` if the debug data directory is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the debug directory entries cannot be read from the
+    /// image or are malformed.
     pub fn debug_info(&self) -> Result<Option<crate::debug::DebugInfo>> {
         use crate::data_dir::DataDirectoryType;
 
@@ -108,13 +134,20 @@ impl PeImage {
     /// Update the debug directory with a CodeView entry pointing to a PDB.
     ///
     /// This is the most common debug directory format. Creates a single CodeView RSDS entry.
-    /// If target_section is None, uses ".rdata" or the last section.
+    /// If `target_section` is `None`, uses ".rdata" or the last section.
     ///
     /// # Arguments
-    /// * `codeview` - The CodeView info containing PDB path and GUID
+    /// * `codeview` - The `CodeView` info containing PDB path and GUID
     /// * `target_section` - Optional section to place the debug data
     ///
     /// Returns the RVA where the debug directory was written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no debug slot and
+    /// cannot be extended, if the target section does not exist, if the
+    /// `CodeView` record cannot be serialized, or if appending it breaks the
+    /// image layout.
     pub fn update_debug_codeview(
         &mut self,
         codeview: &crate::debug::CodeViewRsds,
@@ -126,7 +159,7 @@ impl PeImage {
 
         // Find target section
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if self.section_by_name(".rdata").is_some() {
                     Some(".rdata".to_string())
@@ -137,9 +170,8 @@ impl PeImage {
             .unwrap_or_else(|| ".rdata".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(&section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(&section_name));
         };
 
         // Calculate append RVA
@@ -156,9 +188,17 @@ impl PeImage {
         Ok(append_rva)
     }
 
-    /// Update the debug directory from a DebugInfo structure.
+    /// Update the debug directory from a `DebugInfo` structure.
     ///
-    /// Returns the RVA where the debug directory was written.
+    /// Returns the RVA where the debug directory was written, or 0 if
+    /// `debug_info` has no entries and the directory was cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no debug slot and
+    /// cannot be extended, if the target section does not exist, if the debug
+    /// entries cannot be serialized, or if appending them breaks the image
+    /// layout.
     pub fn update_debug(
         &mut self,
         debug_info: &crate::debug::DebugInfo,
@@ -176,7 +216,7 @@ impl PeImage {
 
         // Find target section
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if self.section_by_name(".rdata").is_some() {
                     Some(".rdata".to_string())
@@ -187,9 +227,8 @@ impl PeImage {
             .unwrap_or_else(|| ".rdata".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(&section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(&section_name));
         };
 
         // Calculate append RVA
@@ -206,7 +245,7 @@ impl PeImage {
         Ok(append_rva)
     }
 
-    /// Parse the CLI header (IMAGE_COR20_HEADER) for .NET assemblies.
+    /// Parse the CLI header (`IMAGE_COR20_HEADER`) for .NET assemblies.
     ///
     /// Returns `None` if the CLR data directory is not present.
     ///
@@ -222,6 +261,11 @@ impl PeImage {
     /// }
     /// # Ok::<(), portex::Error>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CLR data directory is smaller than
+    /// `IMAGE_COR20_HEADER`, cannot be read at its RVA, or is malformed.
     pub fn clr_header(&self) -> Result<Option<crate::clr::CliHeader>> {
         use crate::data_dir::DataDirectoryType;
 
@@ -230,7 +274,7 @@ impl PeImage {
             .filter(|d| d.is_present());
         match dir {
             Some(d) => {
-                if d.size < crate::clr::CliHeader::SIZE as u32 {
+                if (d.size as usize) < crate::clr::CliHeader::SIZE {
                     return Err(Error::invalid_data_directory(format!(
                         "CLR header is {} bytes, expected at least {}",
                         d.size,
@@ -250,6 +294,13 @@ impl PeImage {
     ///
     /// Portex deliberately stops at this boundary; metadata streams and tables
     /// belong to crates such as `clrmeta`.
+    ///
+    /// Returns `Ok(None)` if the CLR data directory is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CLI header cannot be parsed, if only one of its
+    /// metadata RVA and size is set, or if the metadata blob cannot be read.
     pub fn clr_metadata(&self) -> Result<Option<Vec<u8>>> {
         let Some(header) = self.clr_header()? else {
             return Ok(None);
@@ -264,7 +315,8 @@ impl PeImage {
             .ok_or_else(|| Error::invalid_rva(header.metadata_rva))
     }
 
-    /// Parse the rich header (if present).
+    /// Parse the Rich header (if present) from the DOS stub.
+    #[must_use]
     pub fn rich_header(&self) -> Option<crate::rich::RichHeader> {
         let pe_offset = usize::try_from(self.dos_header.e_lfanew).ok()?;
         let stub_size = pe_offset.checked_sub(crate::dos::DosHeader::SIZE)?;
@@ -280,6 +332,13 @@ impl PeImage {
     }
 
     /// Parse the exception directory using the current machine's ABI.
+    ///
+    /// Returns `Ok(None)` if the exception data directory is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the exception directory cannot be read or is
+    /// malformed for the image's machine type.
     pub fn exception_table(&self) -> Result<Option<crate::exception::ExceptionTable>> {
         use crate::data_dir::DataDirectoryType;
 
@@ -303,6 +362,11 @@ impl PeImage {
     ///
     /// Prefer [`Self::exception_table`] for code that may inspect ARM-family
     /// or otherwise architecture-specific images.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the exception directory cannot be parsed, or if the
+    /// image is not AMD64 and its exception directory is present.
     pub fn exception_directory(&self) -> Result<crate::exception::ExceptionDirectory> {
         match self.exception_table()? {
             Some(crate::exception::ExceptionTable::X64(directory)) => Ok(directory),
@@ -314,6 +378,16 @@ impl PeImage {
     }
 
     /// Write an architecture-aware exception table.
+    ///
+    /// The table is appended to `target_section`, or to ".pdata", ".rdata", or
+    /// the last section. Returns the RVA where the table was written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no exception slot and
+    /// cannot be extended, if the table encoding does not match the PE machine
+    /// type, if the table cannot be serialized or exceeds `u32`, if no target
+    /// section exists, or if appending it breaks the image layout.
     pub fn update_exception_table(
         &mut self,
         table: &crate::exception::ExceptionTable,
@@ -376,16 +450,23 @@ impl PeImage {
         Ok(rva)
     }
 
-    /// Update the exception directory (.pdata).
+    /// Update the exception directory (`.pdata`).
     ///
     /// Creates or replaces the exception directory with new function entries.
-    /// If target_section is None, uses ".pdata" or ".rdata" or the last section.
+    /// If `target_section` is `None`, uses ".pdata" or ".rdata" or the last section.
     ///
     /// # Arguments
     /// * `directory` - The exception directory to write
     /// * `target_section` - Optional section to place the exception data
     ///
     /// Returns the RVA where the exception directory was written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no exception slot and
+    /// cannot be extended, if the target section does not exist, if the
+    /// entries cannot be serialized, or if appending them breaks the image
+    /// layout.
     pub fn update_exception(
         &mut self,
         directory: &crate::exception::ExceptionDirectory,
@@ -397,7 +478,7 @@ impl PeImage {
 
         // Find target section
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if self.section_by_name(".pdata").is_some() {
                     Some(".pdata".to_string())
@@ -410,9 +491,8 @@ impl PeImage {
             .unwrap_or_else(|| ".pdata".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(&section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(&section_name));
         };
 
         // Build exception data
@@ -437,6 +517,13 @@ impl PeImage {
     /// therefore reads `Size` bytes at the directory address. A zero `Size`
     /// keeps the directory size. A structure that the mapped image cannot hold
     /// is an error.
+    ///
+    /// Returns `Ok(None)` if the load config data directory is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `Size` field or the structure it describes
+    /// cannot be read at the directory RVA, or if the structure is malformed.
     pub fn load_config(&self) -> Result<Option<crate::loadconfig::LoadConfigDirectory>> {
         use crate::data_dir::DataDirectoryType;
 
@@ -450,12 +537,8 @@ impl PeImage {
         let header = self
             .read_rva(directory.virtual_address, core::mem::size_of::<u32>())
             .ok_or_else(invalid)?;
-        let size = u32::from_le_bytes(
-            header
-                .as_slice()
-                .try_into()
-                .expect("the read has the width of the Size field"),
-        );
+        let header: [u8; 4] = header.as_slice().try_into().map_err(|_| invalid())?;
+        let size = u32::from_le_bytes(header);
         let length = if size == 0 { directory.size } else { size };
         let data = self
             .read_rva(directory.virtual_address, length as usize)
@@ -468,14 +551,21 @@ impl PeImage {
 
     /// Update the load config directory.
     ///
-    /// Creates or replaces the LoadConfig directory with new data.
-    /// If target_section is None, uses ".rdata" or the last section.
+    /// Creates or replaces the `LoadConfig` directory with new data.
+    /// If `target_section` is `None`, uses ".rdata" or the last section.
     ///
     /// # Arguments
-    /// * `config` - The LoadConfig directory to write
-    /// * `target_section` - Optional section to place the LoadConfig data
+    /// * `config` - The `LoadConfig` directory to write
+    /// * `target_section` - Optional section to place the `LoadConfig` data
     ///
-    /// Returns the RVA where the LoadConfig directory was written.
+    /// Returns the RVA where the `LoadConfig` directory was written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data-directory table has no load config slot
+    /// and cannot be extended, if the target section does not exist, if the
+    /// structure cannot be serialized, or if appending it breaks the image
+    /// layout.
     pub fn update_load_config(
         &mut self,
         config: &crate::loadconfig::LoadConfigDirectory,
@@ -487,7 +577,7 @@ impl PeImage {
 
         // Find target section
         let section_name: String = target_section
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .or_else(|| {
                 if self.section_by_name(".rdata").is_some() {
                     Some(".rdata".to_string())
@@ -498,9 +588,8 @@ impl PeImage {
             .unwrap_or_else(|| ".rdata".to_string());
 
         let section_idx = self.sections.iter().position(|s| s.name() == section_name);
-        let section_idx = match section_idx {
-            Some(idx) => idx,
-            None => return Err(crate::Error::invalid_section(&section_name)),
+        let Some(section_idx) = section_idx else {
+            return Err(crate::Error::invalid_section(&section_name));
         };
 
         // Build LoadConfig data

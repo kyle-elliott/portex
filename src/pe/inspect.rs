@@ -1,4 +1,8 @@
-use super::*;
+use super::{MAX_NUMBER_OF_SECTIONS, PeImage, SourceLayout};
+use crate::optional::OptionalHeader;
+use crate::prelude::*;
+use crate::section::Section;
+use crate::{Error, Result};
 
 impl PeImage {
     /// Check if this is a 64-bit PE file.
@@ -190,17 +194,27 @@ impl PeImage {
     }
 
     /// Add a new section.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_add_section`] fails, i.e. the image already has
+    /// [`MAX_NUMBER_OF_SECTIONS`] sections or the section data exceeds
+    /// `u32::MAX` bytes.
     pub fn add_section(&mut self, section: Section) {
         self.try_add_section(section)
             .expect("too many PE sections: use try_add_section() for fallible updates");
     }
 
     /// Add a section while enforcing the executable-image section limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the image already has [`MAX_NUMBER_OF_SECTIONS`]
+    /// sections or the section data exceeds `u32::MAX` bytes.
     pub fn try_add_section(&mut self, section: Section) -> Result<()> {
         if self.sections.len() >= MAX_NUMBER_OF_SECTIONS {
             return Err(Error::invalid_section(format!(
-                "section count would exceed the PE image limit of {}",
-                MAX_NUMBER_OF_SECTIONS
+                "section count would exceed the PE image limit of {MAX_NUMBER_OF_SECTIONS}"
             )));
         }
         u32::try_from(section.data.len())
@@ -214,8 +228,10 @@ impl PeImage {
     /// Remove a section by name.
     pub fn remove_section(&mut self, name: &str) -> Option<Section> {
         let idx = self.sections.iter().position(|s| s.name() == name)?;
-        self.coff_header.number_of_sections = (self.sections.len() - 1) as u16;
-        Some(self.sections.remove(idx))
+        let removed = self.sections.remove(idx);
+        self.coff_header.number_of_sections =
+            u16::try_from(self.sections.len()).unwrap_or(u16::MAX);
+        Some(removed)
     }
 
     /// Get the entry point RVA.
@@ -292,6 +308,12 @@ impl PeImage {
     /// directory formats. The Security directory is intentionally rejected
     /// because its address is a file offset; use [`crate::PeFile::directory_data`]
     /// for a complete raw-file view.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `dir_type` is the Security directory, if the entry
+    /// has only one of its address and size set, or if the directory's RVA
+    /// range is not readable from the image.
     pub fn directory_data(
         &self,
         dir_type: crate::data_dir::DataDirectoryType,
@@ -343,6 +365,13 @@ impl PeImage {
     }
 
     /// Parse the import table.
+    ///
+    /// Returns an empty table when the import directory is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the import descriptors, thunks, or names are
+    /// unreadable or malformed.
     #[must_use = "parsing returns an import table that should be used"]
     pub fn imports(&self) -> Result<crate::import::ImportTable> {
         use crate::data_dir::DataDirectoryType;
@@ -365,6 +394,13 @@ impl PeImage {
     }
 
     /// Parse the export table.
+    ///
+    /// Returns an empty table when the export directory is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `IMAGE_EXPORT_DIRECTORY` or its address, name,
+    /// or ordinal tables are unreadable or malformed.
     #[must_use = "parsing returns an export table that should be used"]
     pub fn exports(&self) -> Result<crate::export::ExportTable> {
         use crate::data_dir::DataDirectoryType;
@@ -382,6 +418,12 @@ impl PeImage {
     }
 
     /// Parse the relocation table.
+    ///
+    /// Returns an empty table when the base-relocation directory is absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a base-relocation block is unreadable or malformed.
     #[must_use = "parsing returns a relocation table that should be used"]
     pub fn relocations(&self) -> Result<crate::reloc::RelocationTable> {
         use crate::data_dir::DataDirectoryType;
@@ -405,11 +447,16 @@ impl PeImage {
         rva: u32,
         size: u32,
     ) {
-        self.set_data_directory_by_index(dir_type.as_index(), rva, size)
-            .expect("a standard data-directory index always fits the optional header");
+        self.store_data_directory(dir_type.as_index(), rva, size);
     }
 
     /// Update a data directory entry by index (for advanced use).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `index` is too large for the data-directory array
+    /// to fit in an optional header whose size is limited by the `u16`
+    /// `SizeOfOptionalHeader` field.
     pub fn set_data_directory_by_index(&mut self, index: usize, rva: u32, size: u32) -> Result<()> {
         let base_size = match &self.optional_header {
             OptionalHeader::Pe32(_) => crate::optional::OptionalHeader32::BASE_SIZE,
@@ -418,10 +465,16 @@ impl PeImage {
         let max_count = (u16::MAX as usize - base_size) / crate::data_dir::DataDirectory::SIZE;
         if index >= max_count {
             return Err(Error::invalid_data_directory(format!(
-                "directory index {} cannot fit in a PE optional header",
-                index
+                "directory index {index} cannot fit in a PE optional header"
             )));
         }
+        self.store_data_directory(index, rva, size);
+        Ok(())
+    }
+
+    /// Store a data-directory entry, growing the array and updating
+    /// `NumberOfRvaAndSizes` as needed. `index` must already be validated.
+    fn store_data_directory(&mut self, index: usize, rva: u32, size: u32) {
         let dirs = self.optional_header.data_directories_mut();
         if dirs.len() <= index {
             dirs.resize(index + 1, crate::data_dir::DataDirectory::default());
@@ -429,12 +482,11 @@ impl PeImage {
         dirs[index].virtual_address = rva;
         dirs[index].size = size;
 
-        let count = dirs.len() as u32;
+        let count = u32::try_from(dirs.len()).unwrap_or(u32::MAX);
         match &mut self.optional_header {
             OptionalHeader::Pe32(header) => header.number_of_rva_and_sizes = count,
             OptionalHeader::Pe32Plus(header) => header.number_of_rva_and_sizes = count,
         }
-        Ok(())
     }
 
     pub(super) fn ensure_data_directory_slot(
@@ -460,6 +512,12 @@ impl PeImage {
     }
 
     /// Append data to a section with checked layout and address arithmetic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no section is named `section_name`, if layout
+    /// recomputation fails, or if the appended data overflows the section's
+    /// size or RVA range.
     pub fn try_append_to_section(&mut self, section_name: &str, data: &[u8]) -> Result<u32> {
         self.try_update_layout()?;
         let section = self

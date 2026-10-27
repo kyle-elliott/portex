@@ -9,6 +9,7 @@ use crate::{Error, Result};
 
 /// Align a value up without wrapping.
 #[inline]
+#[must_use]
 pub fn checked_align_up(value: u32, alignment: u32) -> Option<u32> {
     if alignment == 0 {
         return Some(value);
@@ -23,12 +24,14 @@ pub fn checked_align_up(value: u32, alignment: u32) -> Option<u32> {
 
 /// Align a value up to the given alignment.
 #[inline]
+#[must_use]
 pub fn align_up(value: u32, alignment: u32) -> u32 {
     checked_align_up(value, alignment).unwrap_or(u32::MAX - (u32::MAX % alignment.max(1)))
 }
 
 /// Align a value down to the given alignment.
 #[inline]
+#[must_use]
 pub fn align_down(value: u32, alignment: u32) -> u32 {
     if alignment == 0 {
         return value;
@@ -56,6 +59,7 @@ impl Default for LayoutConfig {
 
 impl LayoutConfig {
     /// Create config from optional header.
+    #[must_use]
     pub fn from_optional_header(opt: &OptionalHeader) -> Self {
         Self {
             file_alignment: opt.file_alignment(),
@@ -64,17 +68,20 @@ impl LayoutConfig {
     }
 
     /// Align to file alignment.
+    #[must_use]
     pub fn align_file(&self, value: u32) -> u32 {
         align_up(value, self.file_alignment)
     }
 
     /// Align to section alignment.
+    #[must_use]
     pub fn align_section(&self, value: u32) -> u32 {
         align_up(value, self.section_alignment)
     }
 }
 
 /// Calculate the size of all headers (DOS + PE sig + COFF + Optional + Section table).
+#[must_use]
 pub fn headers_size(num_sections: usize, optional_header_size: usize) -> usize {
     DosHeader::SIZE              // DOS header
         + 4                      // PE signature
@@ -87,6 +94,7 @@ pub fn headers_size(num_sections: usize, optional_header_size: usize) -> usize {
 ///
 /// Unlike [`headers_size`], this accounts for the DOS stub and any padding
 /// before the PE signature through the header's `e_lfanew` value.
+#[must_use]
 pub fn headers_size_at(
     pe_offset: usize,
     num_sections: usize,
@@ -101,12 +109,22 @@ pub fn headers_size_at(
 
 /// Recalculate section layout (RVAs and file offsets).
 /// Returns the total file size.
+///
+/// # Panics
+///
+/// Panics if any section RVA, file offset, or aligned size overflows `u32`;
+/// use [`try_layout_sections`] for fallible layout.
 pub fn layout_sections(sections: &mut [Section], config: &LayoutConfig, headers_size: u32) -> u32 {
     try_layout_sections(sections, config, headers_size)
         .expect("PE layout overflow: use try_layout_sections() for fallible layout")
 }
 
 /// Recalculate section layout with checked size and address arithmetic.
+///
+/// # Errors
+///
+/// Returns an `InvalidSection` error if section data exceeds `u32`, or if any
+/// RVA, file offset, or aligned size overflows `u32`.
 pub fn try_layout_sections(
     sections: &mut [Section],
     config: &LayoutConfig,
@@ -210,13 +228,24 @@ pub fn try_layout_sections(
     Ok(current_file_offset)
 }
 
-/// Calculate size_of_image (total virtual size, aligned to section alignment).
+/// Calculate `SizeOfImage` (total virtual size, aligned to section alignment).
+///
+/// # Panics
+///
+/// Panics if the aligned virtual end of any section overflows `u32`; use
+/// [`try_calculate_size_of_image`] for fallible calculation.
+#[must_use]
 pub fn calculate_size_of_image(sections: &[Section], config: &LayoutConfig) -> u32 {
     try_calculate_size_of_image(sections, config)
         .expect("PE image-size overflow: use try_calculate_size_of_image()")
 }
 
 /// Calculate `SizeOfImage` with checked address arithmetic.
+///
+/// # Errors
+///
+/// Returns an `InvalidSection` error if the aligned virtual end of any section
+/// overflows `u32`.
 pub fn try_calculate_size_of_image(sections: &[Section], config: &LayoutConfig) -> Result<u32> {
     if sections.is_empty() {
         return checked_align_up(0x1000, config.section_alignment)

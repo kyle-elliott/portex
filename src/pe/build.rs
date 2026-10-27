@@ -1,4 +1,16 @@
-use super::*;
+use super::PeImage;
+use crate::coff::{CoffHeader, PE_SIGNATURE};
+use crate::dos::DosHeader;
+use crate::prelude::*;
+use crate::section::SectionHeader;
+use crate::{Error, Result};
+
+#[cfg(feature = "std")]
+use std::fs::File;
+#[cfg(feature = "std")]
+use std::io::Write;
+#[cfg(feature = "std")]
+use std::path::Path;
 
 impl PeImage {
     /// Build the PE file as a byte vector.
@@ -6,6 +18,11 @@ impl PeImage {
     ///
     /// For untrusted or manually-constructed structures, prefer
     /// [`Self::try_build`] to receive structural errors instead of panicking.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_build`] returns an error.
+    #[must_use]
     pub fn build(&self) -> Vec<u8> {
         self.try_build()
             .expect("PE build failed: use PeImage::try_build() to handle invalid structures")
@@ -13,6 +30,13 @@ impl PeImage {
 
     /// Build the PE file, returning an error for invalid offsets, sizes, or
     /// header relationships.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if layout recomputation fails, if `e_lfanew`, the DOS
+    /// stub, the optional header, or section raw ranges are inconsistent or
+    /// overflow, if a debug directory entry cannot be rebased, or if the
+    /// output buffer cannot be allocated.
     pub fn try_build(&self) -> Result<Vec<u8>> {
         let mut pe = self.clone();
         pe.try_update_layout()?;
@@ -36,9 +60,8 @@ impl PeImage {
     }
 
     pub(crate) fn current_layout_can_hold_data(&self) -> Result<bool> {
-        let headers = match self.build_headers() {
-            Ok(headers) => headers,
-            Err(_) => return Ok(false),
+        let Ok(headers) = self.build_headers() else {
+            return Ok(false);
         };
         let header_limit = self.optional_header.size_of_headers() as usize;
         if headers.len() > header_limit {
@@ -69,6 +92,10 @@ impl PeImage {
 
     /// Materialize this normalized representation as a loader-style memory
     /// image at its current runtime base.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::to_mapped_image_at`].
     pub fn to_mapped_image(&self) -> Result<Vec<u8>> {
         self.to_mapped_image_at(self.runtime_image_base())
     }
@@ -76,6 +103,13 @@ impl PeImage {
     /// Materialize a loader-style memory image at `runtime_image_base`,
     /// applying the base-relocation table when the target base differs from
     /// the bytes' current base.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if layout recomputation or header serialization fails,
+    /// if a section extends past `SizeOfImage`, if the image buffer cannot be
+    /// allocated, or if rebasing is required but the base-relocation table is
+    /// missing, malformed, or targets bytes outside the image.
     pub fn to_mapped_image_at(&self, runtime_image_base: u64) -> Result<Vec<u8>> {
         let mut pe = self.clone();
         pe.try_update_layout()?;
@@ -113,8 +147,7 @@ impl PeImage {
             let relocations = pe.relocations()?;
             if relocations.is_empty() {
                 return Err(Error::invalid_data_directory(format!(
-                    "cannot move image from {:#x} to {:#x} without base relocations",
-                    current_base, runtime_image_base
+                    "cannot move image from {current_base:#x} to {runtime_image_base:#x} without base relocations"
                 )));
             }
             let delta = i128::from(runtime_image_base) - i128::from(current_base);
@@ -132,7 +165,7 @@ impl PeImage {
         let Some(directory) = self
             .data_directory(DataDirectoryType::Debug)
             .copied()
-            .filter(|directory| directory.is_present())
+            .filter(|dir| dir.is_present())
         else {
             return Ok(());
         };
@@ -193,8 +226,7 @@ impl PeImage {
             .ok_or_else(|| Error::invalid_section("DOS stub size overflow"))?;
         if stub_end > pe_offset {
             return Err(Error::invalid_section(format!(
-                "DOS stub ends at {:#x}, after e_lfanew {:#x}",
-                stub_end, pe_offset
+                "DOS stub ends at {stub_end:#x}, after e_lfanew {pe_offset:#x}"
             )));
         }
 
@@ -208,8 +240,7 @@ impl PeImage {
         let declared_optional_size = self.coff_header.size_of_optional_header as usize;
         if optional_size > declared_optional_size {
             return Err(Error::invalid_section(format!(
-                "optional header needs {} bytes, but COFF declares {}",
-                optional_size, declared_optional_size
+                "optional header needs {optional_size} bytes, but COFF declares {declared_optional_size}"
             )));
         }
         let sections_offset = optional_offset
@@ -249,7 +280,7 @@ impl PeImage {
     }
 
     /// Write the PE bytes without updating layout.
-    /// Use this if you've already called update_layout() and want to avoid redundant work.
+    /// Use this if you've already called `update_layout()` and want to avoid redundant work.
     fn try_write_bytes(&self) -> Result<Vec<u8>> {
         // Calculate total file size
         let mut file_size = self.optional_header.size_of_headers() as usize;
@@ -299,6 +330,11 @@ impl PeImage {
 
     /// Write the PE file to disk.
     /// This method does not mutate self - it computes layout on a clone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::try_build`] fails or the file cannot be
+    /// created or written.
     #[cfg(feature = "std")]
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = self.try_build()?;
@@ -308,6 +344,10 @@ impl PeImage {
     }
 
     /// Serialize this normalized image to a `nostdio` stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::try_build`] fails or the stream write fails.
     pub fn write_to<W: nostdio::Write>(&self, stream: &mut W) -> Result<()> {
         stream
             .write_all(&self.try_build()?)

@@ -44,11 +44,13 @@ pub enum DataDirectoryType {
 
 impl DataDirectoryType {
     /// Get the index value.
+    #[must_use]
     pub const fn as_index(self) -> usize {
         self as usize
     }
 
     /// Try to create from an index.
+    #[must_use]
     pub const fn from_index(index: usize) -> Option<Self> {
         match index {
             0 => Some(Self::Export),
@@ -72,6 +74,7 @@ impl DataDirectoryType {
     }
 
     /// Get the name of this directory type.
+    #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Export => "Export",
@@ -102,7 +105,7 @@ impl DataDirectoryType {
 /// Number of data directories in PE32+.
 pub const NUMBER_OF_DIRECTORY_ENTRIES: usize = 16;
 
-/// Data Directory entry (IMAGE_DATA_DIRECTORY).
+/// Data Directory entry (`IMAGE_DATA_DIRECTORY`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
 pub struct DataDirectory {
@@ -117,6 +120,10 @@ impl DataDirectory {
     pub const SIZE: usize = 8;
 
     /// Parse a data directory from a byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `data` is shorter than [`Self::SIZE`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
@@ -129,19 +136,22 @@ impl DataDirectory {
     }
 
     /// Write the data directory to a byte buffer.
-    pub fn write(&self, buf: &mut [u8]) -> Result<()> {
-        if buf.len() < Self::SIZE {
-            return Err(Error::buffer_too_small(Self::SIZE, buf.len()));
-        }
-
-        buf[0..4].copy_from_slice(&self.virtual_address.to_le_bytes());
-        buf[4..8].copy_from_slice(&self.size.to_le_bytes());
-
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `buf` is shorter than [`Self::SIZE`].
+    pub fn write(self, buf: &mut [u8]) -> Result<()> {
+        let len = buf.len();
+        let out = buf
+            .first_chunk_mut::<{ Self::SIZE }>()
+            .ok_or_else(|| Error::buffer_too_small(Self::SIZE, len))?;
+        *out = self.to_bytes();
         Ok(())
     }
 
     /// Serialize to a byte array.
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         buf[0..4].copy_from_slice(&self.virtual_address.to_le_bytes());
         buf[4..8].copy_from_slice(&self.size.to_le_bytes());
@@ -149,18 +159,28 @@ impl DataDirectory {
     }
 
     /// Check if this directory entry is present (non-zero).
-    pub fn is_present(&self) -> bool {
+    #[must_use]
+    pub fn is_present(self) -> bool {
         self.virtual_address != 0 || self.size != 0
     }
 
     /// Parse a data directory from a positional reader at the given offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::SIZE`] bytes cannot be read at `offset`.
     pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
         let mut buf = [0u8; Self::SIZE];
         reader.read_exact_at(offset, &mut buf)?;
         Self::parse(&buf)
     }
 
-    /// Read multiple data directories from a positional reader.
+    /// Read `count` consecutive data directories from a positional reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-data-directory error if the table size or an entry
+    /// offset overflows, or a read error if any entry cannot be read.
     pub fn read_directories<R: ReadAt>(reader: &R, offset: u64, count: usize) -> Result<Vec<Self>> {
         count
             .checked_mul(Self::SIZE)
@@ -209,7 +229,7 @@ mod tests {
     #[test]
     fn test_data_directory_to_bytes_roundtrip() {
         let dir = DataDirectory {
-            virtual_address: 0xABCD1234,
+            virtual_address: 0xABCD_1234,
             size: 0x5678,
         };
 
@@ -230,7 +250,7 @@ mod tests {
             let index = dir_type.as_index();
             let recovered = DataDirectoryType::from_index(index).unwrap();
             assert_eq!(dir_type, recovered);
-            assert!(!dir_type.name().is_empty());
+            assert_ne!(dir_type.name(), "");
         }
     }
 

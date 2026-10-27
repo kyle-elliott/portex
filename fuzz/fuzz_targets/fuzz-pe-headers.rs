@@ -1,3 +1,5 @@
+//! Fuzz target that parses arbitrary bytes as PE headers.
+
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

@@ -70,8 +70,7 @@ where
         .ok_or_else(|| Error::invalid_data_directory("data-directory RVA overflow"))?;
     if u64::from(rva) < u64::from(enclosing_rva) || u64::from(rva) >= enclosing_end {
         return Err(Error::invalid_data_directory(format!(
-            "{context} RVA {:#x} is outside {:#x}..{:#x}",
-            rva, enclosing_rva, enclosing_end
+            "{context} RVA {rva:#x} is outside {enclosing_rva:#x}..{enclosing_end:#x}"
         )));
     }
     let available = usize::try_from(enclosing_end - u64::from(rva)).unwrap_or(usize::MAX);
@@ -101,8 +100,7 @@ pub(crate) fn bounded_table_range(
         .ok_or_else(|| Error::invalid_data_directory("data-directory RVA overflow"))?;
     if u64::from(table_rva) < u64::from(enclosing_rva) || table_end > enclosing_end {
         return Err(Error::invalid_data_directory(format!(
-            "{context} range {:#x}..{:#x} is outside {:#x}..{:#x}",
-            table_rva, table_end, enclosing_rva, enclosing_end
+            "{context} range {table_rva:#x}..{table_end:#x} is outside {enclosing_rva:#x}..{enclosing_end:#x}"
         )));
     }
     Ok(())

@@ -19,7 +19,7 @@ fn test_resource_data_entry_size() {
 fn test_resource_directory_header_roundtrip() {
     let original = ResourceDirectoryHeader {
         characteristics: 0,
-        time_date_stamp: 0x12345678,
+        time_date_stamp: 0x1234_5678,
         major_version: 1,
         minor_version: 0,
         number_of_named_entries: 2,
@@ -36,8 +36,8 @@ fn test_resource_directory_header_roundtrip() {
 fn test_resource_entry_flags() {
     // Test directory entry with name
     let entry = ResourceDirectoryEntry {
-        name_or_id: 0x80001000,     // High bit set = named
-        offset_to_data: 0x80002000, // High bit set = directory
+        name_or_id: 0x8000_1000,     // High bit set = named
+        offset_to_data: 0x8000_2000, // High bit set = directory
     };
     assert!(entry.is_named());
     assert!(entry.is_directory());
@@ -68,7 +68,7 @@ fn test_resource_builder_single_resource() {
 
     let (data, size) = builder.build(0x3000);
     assert!(size > 0);
-    assert!(!data.is_empty());
+    assert_eq!(data.len(), size as usize);
 
     // Verify we can parse the built data
     let read_fn = |rva: u32, len: usize| -> Option<Vec<u8>> {

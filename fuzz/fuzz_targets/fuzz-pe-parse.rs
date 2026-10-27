@@ -1,3 +1,5 @@
+//! Fuzz target that parses arbitrary bytes as PE files and images.
+
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

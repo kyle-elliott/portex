@@ -7,11 +7,14 @@
 ///
 /// The algorithm:
 /// 1. Sum all 16-bit words, using 32-bit arithmetic with carry-add
-/// 2. Skip the checksum field itself (at offset checksum_offset)
+/// 2. Skip the checksum field itself (at offset `checksum_offset`)
 /// 3. Fold the result to 16 bits
-/// 4. Add the file size
+/// 4. Add the file size (modulo 2^32)
+#[must_use]
 pub fn calculate_checksum(data: &[u8], checksum_offset: usize) -> u32 {
-    let mut sum: u64 = 0;
+    // Folding after every addition keeps `sum` within 16 bits, so adding a
+    // 16-bit word never overflows a `u32`.
+    let mut sum: u32 = 0;
     let len = data.len();
 
     // Process 16-bit words
@@ -23,27 +26,33 @@ pub fn calculate_checksum(data: &[u8], checksum_offset: usize) -> u32 {
             continue;
         }
 
-        let word = u16::from_le_bytes([data[i], data[i + 1]]) as u64;
-        sum += word;
+        let word = u32::from(u16::from_le_bytes([data[i], data[i + 1]]));
+        sum = fold_carry(sum + word);
         i += 2;
     }
 
     // Handle odd byte at end
     if i < len {
-        sum += data[i] as u64;
+        sum = fold_carry(sum + u32::from(data[i]));
     }
 
-    // Fold to 32 bits with carry
+    // Add file size; the algorithm uses only its low 32 bits
+    let size_low = (len as u64 & 0xFFFF_FFFF) as u32;
+    sum.wrapping_add(size_low)
+}
+
+/// Fold the carry above bit 15 back into the low 16 bits (end-around carry).
+const fn fold_carry(mut sum: u32) -> u32 {
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
-
-    // Add file size
-    (sum as u32).wrapping_add(len as u32)
+    sum
 }
 
-/// Get the offset of the checksum field in the optional header.
-/// Returns None if the PE is malformed or doesn't have an optional header.
+/// Get the file offset of the `CheckSum` field in the optional header.
+///
+/// Returns `None` if the PE is malformed or doesn't have an optional header.
+#[must_use]
 pub fn checksum_field_offset(data: &[u8]) -> Option<usize> {
     // DOS header e_lfanew is at offset 0x3C
     if data.len() < 0x40 {
@@ -66,7 +75,9 @@ pub fn checksum_field_offset(data: &[u8]) -> Option<usize> {
 }
 
 /// Calculate and return the checksum for PE data.
-/// Returns None if the checksum field offset cannot be determined.
+///
+/// Returns `None` if the checksum field offset cannot be determined.
+#[must_use]
 pub fn compute_pe_checksum(data: &[u8]) -> Option<u32> {
     let offset = checksum_field_offset(data)?;
     Some(calculate_checksum(data, offset))

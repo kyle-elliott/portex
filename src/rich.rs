@@ -6,11 +6,11 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// Rich header magic value ("Rich" XORed with key).
-const RICH_MAGIC: u32 = 0x68636952; // "Rich"
+/// Rich header end marker (`"Rich"`), stored unencoded and followed by the XOR key.
+const RICH_MAGIC: u32 = 0x6863_6952; // "Rich"
 
-/// DanS marker value (before XOR).
-const DANS_MAGIC: u32 = 0x536E6144; // "DanS"
+/// `DanS` start marker value (before XOR with the key).
+const DANS_MAGIC: u32 = 0x536E_6144; // "DanS"
 
 /// A single Rich header entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +24,9 @@ pub struct RichEntry {
 }
 
 impl RichEntry {
-    /// Create from raw comp_id value.
+    /// Create from a raw `comp_id` value (product ID in the high 16 bits,
+    /// build number in the low 16 bits).
+    #[must_use]
     pub fn from_comp_id(comp_id: u32, use_count: u32) -> Self {
         Self {
             product_id: (comp_id >> 16) as u16,
@@ -33,23 +35,25 @@ impl RichEntry {
         }
     }
 
-    /// Convert to comp_id value.
-    pub fn to_comp_id(&self) -> u32 {
-        ((self.product_id as u32) << 16) | (self.build_number as u32)
+    /// Convert to a `comp_id` value (product ID in the high 16 bits, build
+    /// number in the low 16 bits).
+    #[must_use]
+    pub fn to_comp_id(self) -> u32 {
+        (u32::from(self.product_id) << 16) | u32::from(self.build_number)
     }
 
     /// Get a description of the product (if known).
-    pub fn product_name(&self) -> &'static str {
+    #[must_use]
+    pub fn product_name(self) -> &'static str {
         match self.product_id {
             0x0001 => "Import (old)",
             0x0002 => "Linker (old)",
             0x0004 => "CVTRES (old)",
             0x0005 => "Import",
-            0x0006 => "Linker",
+            0x0006 | 0x000F => "Linker",
             0x0007 => "Export",
             0x000A => "CVTRES",
             0x000B => "MASM",
-            0x000F => "Linker",
             0x0010 => "C",
             0x0011 => "C++",
             0x0013 => "Resource",
@@ -89,7 +93,8 @@ pub struct RichHeader {
 impl RichHeader {
     /// Find and parse Rich header from DOS stub area.
     /// `data` should start from beginning of file.
-    /// Returns None if no Rich header found.
+    /// Returns `None` if no Rich header found.
+    #[must_use]
     pub fn parse(data: &[u8]) -> Option<Self> {
         // A Rich header lives between the fixed DOS header and the PE header.
         if data.len() < 0x40 {
@@ -172,12 +177,21 @@ impl RichHeader {
     }
 
     /// Build Rich header bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_build`] fails.
+    #[must_use]
     pub fn build(&self) -> Vec<u8> {
         self.try_build()
             .expect("Rich-header build failed: use try_build()")
     }
 
     /// Build a Rich header with checked entry-size arithmetic.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generic error if the encoded size overflows `usize`.
     pub fn try_build(&self) -> Result<Vec<u8>> {
         // Size: DanS (4) + padding (12) + entries (8 each) + Rich (4) + key (4)
         let size = self
@@ -215,12 +229,13 @@ impl RichHeader {
 
     /// Calculate a checksum/key from the entries (simplified).
     /// A real implementation would include DOS header in calculation.
+    #[must_use]
     pub fn calculate_key(entries: &[RichEntry], dos_header: &[u8]) -> u32 {
         let mut checksum = 0u32;
 
         // Include DOS header bytes (rotated sum)
-        for (i, &byte) in dos_header.iter().take(0x3C).enumerate() {
-            checksum = checksum.wrapping_add((byte as u32).rotate_left(i as u32));
+        for (rotation, &byte) in (0u32..).zip(dos_header.iter().take(0x3C)) {
+            checksum = checksum.wrapping_add(u32::from(byte).rotate_left(rotation));
         }
 
         // Include entries
@@ -233,6 +248,7 @@ impl RichHeader {
     }
 
     /// Check if the Rich header is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -268,11 +284,13 @@ pub struct RichBuilder {
 
 impl RichBuilder {
     /// Create a new Rich builder.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create from an existing Rich header.
+    #[must_use]
     pub fn from_header(header: &RichHeader) -> Self {
         Self {
             entries: header.entries.clone(),
@@ -296,17 +314,27 @@ impl RichBuilder {
     }
 
     /// Get the number of entries.
+    #[must_use]
     pub fn entry_count(&self) -> usize {
         self.entries.len()
     }
 
     /// Calculate the size of the built Rich header.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_calculate_size`] fails.
+    #[must_use]
     pub fn calculate_size(&self) -> usize {
         self.try_calculate_size()
             .expect("Rich-header size overflow: use try_calculate_size()")
     }
 
     /// Calculate the encoded size with checked arithmetic.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generic error if the encoded size overflows `usize`.
     pub fn try_calculate_size(&self) -> Result<usize> {
         self.entries
             .len()
@@ -316,13 +344,23 @@ impl RichBuilder {
     }
 
     /// Build with a specific XOR key.
-    /// Returns (data, size).
+    /// Returns `(data, size)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_build_with_key`] fails.
+    #[must_use]
     pub fn build_with_key(&self, key: u32) -> (Vec<u8>, u32) {
         self.try_build_with_key(key)
             .expect("Rich-header build failed: use try_build_with_key()")
     }
 
     /// Build with a specific key and checked encoded size.
+    /// Returns `(data, size)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generic error if the encoded size overflows `usize` or `u32`.
     pub fn try_build_with_key(&self, key: u32) -> Result<(Vec<u8>, u32)> {
         let size = self.try_calculate_size()?;
         let header = RichHeader {
@@ -338,19 +376,30 @@ impl RichBuilder {
     }
 
     /// Build with a calculated key based on the DOS header.
-    /// Returns (data, size).
+    /// Returns `(data, size)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_build_with_dos_header`] fails.
+    #[must_use]
     pub fn build_with_dos_header(&self, dos_header: &[u8]) -> (Vec<u8>, u32) {
         self.try_build_with_dos_header(dos_header)
             .expect("Rich-header build failed: use try_build_with_dos_header()")
     }
 
     /// Build using a calculated key with checked encoded size.
+    /// Returns `(data, size)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::try_build_with_key`].
     pub fn try_build_with_dos_header(&self, dos_header: &[u8]) -> Result<(Vec<u8>, u32)> {
         let key = RichHeader::calculate_key(&self.entries, dos_header);
         self.try_build_with_key(key)
     }
 
-    /// Build into a RichHeader struct with a specific key.
+    /// Build into a `RichHeader` struct with a specific key.
+    #[must_use]
     pub fn into_header(self, key: u32) -> RichHeader {
         let size = self.calculate_size();
         RichHeader {
@@ -383,7 +432,7 @@ mod tests {
     #[test]
     fn test_rich_header_build_parse() {
         let header = RichHeader {
-            key: 0x12345678,
+            key: 0x1234_5678,
             entries: vec![
                 RichEntry {
                     product_id: 0x0104,
@@ -424,7 +473,7 @@ mod tests {
 
         assert_eq!(builder.entry_count(), 2);
 
-        let (data, size) = builder.build_with_key(0xABCD1234);
+        let (data, size) = builder.build_with_key(0xABCD_1234);
         assert!(size > 0);
         assert_eq!(data.len(), size as usize);
         assert_eq!(size as usize, builder.calculate_size());
@@ -437,7 +486,7 @@ mod tests {
         pe_data[0x80..0x80 + data.len()].copy_from_slice(&data);
 
         let parsed = RichHeader::parse(&pe_data).unwrap();
-        assert_eq!(parsed.key, 0xABCD1234);
+        assert_eq!(parsed.key, 0xABCD_1234);
         assert_eq!(parsed.entries.len(), 2);
         assert_eq!(parsed.entries[0].product_id, 0x0104);
         assert_eq!(parsed.entries[1].product_id, 0x0105);
@@ -462,7 +511,7 @@ mod tests {
     #[test]
     fn test_rich_builder_from_header() {
         let original = RichHeader {
-            key: 0x11223344,
+            key: 0x1122_3344,
             entries: vec![RichEntry {
                 product_id: 0x0104,
                 build_number: 30729,
@@ -475,8 +524,8 @@ mod tests {
         let builder = RichBuilder::from_header(&original);
         assert_eq!(builder.entry_count(), 1);
 
-        let header = builder.into_header(0x55667788);
-        assert_eq!(header.key, 0x55667788);
+        let header = builder.into_header(0x5566_7788);
+        assert_eq!(header.key, 0x5566_7788);
         assert_eq!(header.entries.len(), 1);
     }
 }

@@ -80,8 +80,8 @@ fn mapped_image_convenience_apis_parse_directories() {
         .machine(MachineType::Amd64)
         .subsystem(Subsystem::WindowsCui)
         .entry_point(0x1000)
-        .add_section(".text", vec![0xCC; 0x200], 0x60000020)
-        .add_section(".rdata", vec![0; 0x1000], 0x40000040)
+        .add_section(".text", vec![0xCC; 0x200], 0x6000_0020)
+        .add_section(".rdata", vec![0; 0x1000], 0x4000_0040)
         .build();
 
     let mut imports = ImportTable::default();
@@ -93,7 +93,7 @@ fn mapped_image_convenience_apis_parse_directories() {
         }],
     );
     source
-        .update_imports(imports, None)
+        .update_imports(&imports, None)
         .expect("imports should be written");
 
     let raw = source.build();
@@ -114,7 +114,7 @@ fn mapped_images_include_virtual_zero_fill() {
         .iter()
         .position(|section| section.name_str() == ".data")
         .unwrap();
-    let section_table_offset = headers.pe_offset as usize
+    let section_table_offset = usize::try_from(headers.pe_offset).expect("PE offset fits usize")
         + 4
         + CoffHeader::SIZE
         + headers.coff_header.size_of_optional_header as usize;
@@ -162,6 +162,10 @@ fn readers_and_rva_resolution_honor_the_selected_layout() {
         .expect("mapped PE at a reader offset should parse");
     assert_eq!(from_offset.read_at_rva(0x1000, 1), Some(&[0xCC][..]));
 
+    #[expect(
+        unsafe_code,
+        reason = "BaseAddressReader::new is unsafe; this test exercises it on a live buffer"
+    )]
     // SAFETY: `mapped` remains alive and unchanged for the reader's entire use.
     let base_reader = unsafe { BaseAddressReader::new(mapped.as_ptr(), Some(mapped.len())) };
     let from_base = PeImage::read_from(&base_reader, 0, SourceLayout::Mapped)

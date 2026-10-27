@@ -1,4 +1,10 @@
-use super::*;
+use super::{MAX_NUMBER_OF_SECTIONS, PeImage};
+use crate::data_dir::DataDirectoryType;
+use crate::dos::DosHeader;
+use crate::layout::{self, LayoutConfig};
+use crate::optional::OptionalHeader;
+use crate::prelude::*;
+use crate::validation::{ValidationCode, ValidationIssue, ValidationResult};
 
 impl PeImage {
     // ========== Validation ==========
@@ -24,11 +30,29 @@ impl PeImage {
     /// }
     /// ```
     #[must_use]
-    pub fn validate(&self) -> crate::validation::ValidationResult {
-        use crate::validation::{ValidationCode, ValidationIssue, ValidationResult};
-
+    pub fn validate(&self) -> ValidationResult {
         let mut result = ValidationResult::new();
 
+        self.validate_header_fields(&mut result);
+
+        let file_align = self.optional_header.file_alignment();
+        let section_align = self.optional_header.section_alignment();
+        Self::validate_alignments(&mut result, file_align, section_align);
+        self.validate_headers_size(&mut result, file_align);
+        self.validate_image_size(&mut result, section_align);
+        self.validate_optional_summaries(&mut result);
+        self.validate_entry_point(&mut result);
+        self.validate_section_file_overlaps(&mut result);
+        self.validate_section_placement(&mut result, file_align, section_align);
+        self.validate_section_virtual_overlaps(&mut result);
+        self.validate_data_directories(&mut result);
+        self.validate_checksum(&mut result);
+
+        result
+    }
+
+    /// Check DOS, COFF, and optional-header field consistency.
+    fn validate_header_fields(&self, result: &mut ValidationResult) {
         // Check DOS signature
         if self.dos_header.e_magic != 0x5A4D {
             result.push(ValidationIssue::error(
@@ -90,8 +114,7 @@ impl PeImage {
             result.push(ValidationIssue::error(
                 ValidationCode::InconsistentOptionalHeader,
                 format!(
-                    "NumberOfRvaAndSizes is {}, but {} directory entries are present",
-                    directory_count, directory_len
+                    "NumberOfRvaAndSizes is {directory_count}, but {directory_len} directory entries are present"
                 ),
             ));
         }
@@ -110,10 +133,11 @@ impl PeImage {
                 ),
             ));
         }
+    }
 
+    /// Check `FileAlignment` and `SectionAlignment` values.
+    fn validate_alignments(result: &mut ValidationResult, file_align: u32, section_align: u32) {
         // Check file alignment
-        let file_align = self.optional_header.file_alignment();
-        let section_align = self.optional_header.section_alignment();
         let low_alignment = section_align != 0 && section_align < 0x1000;
         if file_align == 0
             || !file_align.is_power_of_two()
@@ -123,7 +147,7 @@ impl PeImage {
         {
             result.push(ValidationIssue::error(
                 ValidationCode::InvalidFileAlignment,
-                format!("Invalid file alignment: {:#x}", file_align),
+                format!("Invalid file alignment: {file_align:#x}"),
             ));
         }
 
@@ -131,20 +155,25 @@ impl PeImage {
         if section_align == 0 || !section_align.is_power_of_two() {
             result.push(ValidationIssue::error(
                 ValidationCode::InvalidSectionAlignment,
-                format!("Invalid section alignment: {:#x}", section_align),
+                format!("Invalid section alignment: {section_align:#x}"),
             ));
         }
         if section_align != 0 && file_align > section_align {
             result.push(ValidationIssue::error(
                 ValidationCode::InvalidSectionAlignment,
                 format!(
-                    "file alignment {:#x} exceeds section alignment {:#x}",
-                    file_align, section_align
+                    "file alignment {file_align:#x} exceeds section alignment {section_align:#x}"
                 ),
             ));
         }
+    }
 
-        if self.dos_header.e_lfanew < DosHeader::SIZE as i32 {
+    /// Check `e_lfanew` and `SizeOfHeaders` against the header table.
+    fn validate_headers_size(&self, result: &mut ValidationResult, file_align: u32) {
+        if usize::try_from(self.dos_header.e_lfanew)
+            .ok()
+            .is_none_or(|pe_offset| pe_offset < DosHeader::SIZE)
+        {
             result.push(ValidationIssue::error(
                 ValidationCode::InconsistentHeadersSize,
                 "e_lfanew places the PE header inside the DOS header",
@@ -206,7 +235,10 @@ impl PeImage {
                 ));
             }
         }
+    }
 
+    /// Check `SizeOfImage` against the section layout.
+    fn validate_image_size(&self, result: &mut ValidationResult, section_align: u32) {
         if section_align != 0 && section_align.is_power_of_two() {
             let config = LayoutConfig::from_optional_header(&self.optional_header);
             match layout::try_calculate_size_of_image(&self.sections, &config) {
@@ -230,7 +262,10 @@ impl PeImage {
                 _ => {}
             }
         }
+    }
 
+    /// Check linker-derived optional-header code/data summaries.
+    fn validate_optional_summaries(&self, result: &mut ValidationResult) {
         match super::edit::calculate_optional_layout_fields(&self.sections) {
             Ok(expected) => {
                 let (size_of_code, initialized, uninitialized, base_of_code, base_of_data) =
@@ -285,7 +320,10 @@ impl PeImage {
                 .with_context(error.to_string()),
             ),
         }
+    }
 
+    /// Check that `AddressOfEntryPoint` lies within a section.
+    fn validate_entry_point(&self, result: &mut ValidationResult) {
         // Check entry point is within a section (or is 0 for DLLs)
         let entry = self.optional_header.address_of_entry_point();
         if entry != 0 {
@@ -293,11 +331,14 @@ impl PeImage {
             if !entry_in_section {
                 result.push(ValidationIssue::warning(
                     ValidationCode::EntryPointOutOfBounds,
-                    format!("Entry point {:#x} is not within any section", entry),
+                    format!("Entry point {entry:#x} is not within any section"),
                 ));
             }
         }
+    }
 
+    /// Check that section raw-file ranges do not overlap.
+    fn validate_section_file_overlaps(&self, result: &mut ValidationResult) {
         // Check for overlapping sections (file offsets)
         for (i, s1) in self.sections.iter().enumerate() {
             if s1.header.pointer_to_raw_data == 0 || s1.header.size_of_raw_data == 0 {
@@ -337,7 +378,15 @@ impl PeImage {
                 }
             }
         }
+    }
 
+    /// Check section alignment and loaded raw data.
+    fn validate_section_placement(
+        &self,
+        result: &mut ValidationResult,
+        file_align: u32,
+        section_align: u32,
+    ) {
         for section in &self.sections {
             if file_align != 0
                 && section.header.pointer_to_raw_data != 0
@@ -403,7 +452,10 @@ impl PeImage {
                 );
             }
         }
+    }
 
+    /// Check that section virtual ranges do not overlap.
+    fn validate_section_virtual_overlaps(&self, result: &mut ValidationResult) {
         // Check for overlapping sections (virtual addresses)
         for (i, s1) in self.sections.iter().enumerate() {
             if s1.header.virtual_size.max(s1.header.size_of_raw_data) == 0 {
@@ -442,9 +494,11 @@ impl PeImage {
                 }
             }
         }
+    }
 
+    /// Check data-directory entries against the image.
+    fn validate_data_directories(&self, result: &mut ValidationResult) {
         // Check data directories point to valid sections
-        use crate::data_dir::DataDirectoryType;
         for dir_type in DataDirectoryType::all() {
             if let Some(dir) = self.data_directory(dir_type)
                 && dir.is_present()
@@ -495,9 +549,8 @@ impl PeImage {
                 let in_image = u64::from(rva)
                     .checked_add(u64::from(dir.size))
                     .is_some_and(|end| end <= u64::from(self.optional_header.size_of_image()));
-                let range_readable = usize::try_from(dir.size)
-                    .ok()
-                    .is_some_and(|size| self.contains_rva_range(rva, size));
+                let range_readable =
+                    usize::try_from(dir.size).is_ok_and(|size| self.contains_rva_range(rva, size));
                 if !in_image || !range_readable {
                     result.push(
                         ValidationIssue::warning(
@@ -514,7 +567,10 @@ impl PeImage {
                 }
             }
         }
+    }
 
+    /// Check a nonzero `CheckSum` against the computed checksum.
+    fn validate_checksum(&self, result: &mut ValidationResult) {
         // Check checksum (only warn if non-zero and doesn't match)
         let stored_checksum = match &self.optional_header {
             OptionalHeader::Pe32(h) => h.check_sum,
@@ -526,13 +582,10 @@ impl PeImage {
                 result.push(ValidationIssue::warning(
                     ValidationCode::InvalidChecksum,
                     format!(
-                        "Checksum mismatch: stored {:#x}, computed {:#x}",
-                        stored_checksum, computed
+                        "Checksum mismatch: stored {stored_checksum:#x}, computed {computed:#x}"
                     ),
                 ));
             }
         }
-
-        result
     }
 }

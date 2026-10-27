@@ -1,7 +1,28 @@
-use super::*;
+use super::{MAX_NUMBER_OF_SECTIONS, PeHeaders, SourceLayout};
+use crate::coff::{CoffHeader, verify_pe_signature};
+use crate::dos::DosHeader;
+use crate::optional::OptionalHeader;
+use crate::prelude::*;
+use crate::reader::{ReadAt, SliceReader};
+use crate::section::SectionHeader;
+use crate::{Error, Result};
+
+#[cfg(feature = "std")]
+use crate::reader::FileReader;
+#[cfg(feature = "std")]
+use std::path::Path;
 
 impl PeHeaders {
     /// Read PE headers from any [`ReadAt`] implementation.
+    ///
+    /// `base_offset` is the source offset of the DOS header.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the DOS header, PE signature, COFF header, optional
+    /// header, or section table cannot be read or is invalid, if `e_lfanew` is
+    /// negative or points inside the DOS header, if a header offset overflows,
+    /// or if `NumberOfSections` exceeds [`MAX_NUMBER_OF_SECTIONS`].
     #[must_use = "parsing returns PE headers that should be used"]
     pub fn read_from<R: ReadAt>(reader: &R, base_offset: u64) -> Result<Self> {
         // Parse DOS header
@@ -31,8 +52,7 @@ impl PeHeaders {
         let section_count = coff_header.number_of_sections as usize;
         if section_count > MAX_NUMBER_OF_SECTIONS {
             return Err(Error::invalid_section(format!(
-                "section count {} exceeds the PE image limit of {}",
-                section_count, MAX_NUMBER_OF_SECTIONS
+                "section count {section_count} exceeds the PE image limit of {MAX_NUMBER_OF_SECTIONS}"
             )));
         }
 
@@ -48,7 +68,7 @@ impl PeHeaders {
 
         // Parse section headers
         let sections_offset = optional_offset
-            .checked_add(coff_header.size_of_optional_header as u64)
+            .checked_add(u64::from(coff_header.size_of_optional_header))
             .ok_or_else(|| Error::invalid_section("section-table offset overflow"))?;
         let section_headers = SectionHeader::read_sections(reader, sections_offset, section_count)?;
 
@@ -62,6 +82,11 @@ impl PeHeaders {
     }
 
     /// Read headers from a file on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened or read, or for any
+    /// condition listed on [`Self::read_from`].
     #[cfg(feature = "std")]
     #[must_use = "loading returns PE headers that should be used"]
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -70,6 +95,10 @@ impl PeHeaders {
     }
 
     /// Read headers from a byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any condition listed on [`Self::read_from`].
     #[must_use = "parsing returns PE headers that should be used"]
     pub fn from_slice(data: &[u8]) -> Result<Self> {
         let reader = SliceReader::new(data);
@@ -124,11 +153,13 @@ impl PeHeaders {
     }
 
     /// Get the entry point RVA.
+    #[must_use]
     pub fn entry_point(&self) -> u32 {
         self.optional_header.address_of_entry_point()
     }
 
     /// Get the image base.
+    #[must_use]
     pub fn image_base(&self) -> u64 {
         self.optional_header.image_base()
     }
@@ -137,6 +168,7 @@ impl PeHeaders {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PeImage;
 
     #[test]
     fn test_parse_invalid_dos_signature() {

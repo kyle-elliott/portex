@@ -1,13 +1,26 @@
-use super::*;
+use super::PeImage;
+use crate::optional::OptionalHeader;
+use crate::prelude::*;
+use crate::{Error, Result};
 
 impl PeImage {
     /// Calculate and return the PE checksum.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_calculate_checksum`] returns an error.
+    #[must_use]
     pub fn calculate_checksum(&self) -> u32 {
         self.try_calculate_checksum()
             .expect("checksum calculation failed: use try_calculate_checksum()")
     }
 
     /// Calculate the checksum without panicking on invalid edited state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::try_build`] fails or the serialized image
+    /// is too short to contain the optional-header `CheckSum` field.
     pub fn try_calculate_checksum(&self) -> Result<u32> {
         let data = self.try_build()?;
         crate::checksum::compute_pe_checksum(&data)
@@ -15,12 +28,20 @@ impl PeImage {
     }
 
     /// Update the checksum field in the optional header.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_update_checksum`] returns an error.
     pub fn update_checksum(&mut self) {
         self.try_update_checksum()
-            .expect("checksum update failed: use try_update_checksum()")
+            .expect("checksum update failed: use try_update_checksum()");
     }
 
     /// Update the optional-header checksum without panicking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::try_calculate_checksum`] fails.
     pub fn try_update_checksum(&mut self) -> Result<()> {
         let checksum = self.try_calculate_checksum()?;
         match &mut self.optional_header {
@@ -31,6 +52,11 @@ impl PeImage {
     }
 
     /// Recompute derived layout fields and the checksum.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if layout recomputation or
+    /// [`Self::try_update_checksum`] fails.
     pub fn try_finalize(&mut self) -> Result<()> {
         self.try_update_layout()?;
         self.try_update_checksum()
@@ -86,13 +112,13 @@ impl PeImage {
 
         // Rebuild each one (only if non-empty)
         if !imports.is_empty() {
-            rebuilt.update_imports(imports, target_section)?;
+            rebuilt.update_imports(&imports, target_section)?;
         }
         if !exports.is_empty() {
-            rebuilt.update_exports(exports, target_section)?;
+            rebuilt.update_exports(&exports, target_section)?;
         }
         if !relocations.is_empty() {
-            rebuilt.update_relocations(relocations, target_section)?;
+            rebuilt.update_relocations(&relocations, target_section)?;
         }
         if !resources.resources.is_empty() {
             rebuilt.update_resources(&resources, target_section)?;
@@ -100,7 +126,7 @@ impl PeImage {
         if let Some(bound) = bound_imports
             && !bound.descriptors.is_empty()
         {
-            rebuilt.update_bound_imports(bound, target_section)?;
+            rebuilt.update_bound_imports(&bound, target_section)?;
         }
         if !delay_imports.dlls.is_empty() {
             rebuilt.update_delay_imports(&delay_imports, target_section)?;
@@ -124,6 +150,7 @@ impl PeImage {
     }
 
     /// Read resource data at the given RVA.
+    #[must_use]
     pub fn read_resource_data(&self, resource: &crate::resource::Resource) -> Option<Vec<u8>> {
         self.read_rva(resource.data_rva, resource.size as usize)
     }

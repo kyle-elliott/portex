@@ -48,6 +48,11 @@ struct PreservedRegion {
 
 impl PeFile {
     /// Wrap a normalized image as a raw file with no overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if layout recomputation fails or the resulting raw
+    /// layout cannot be represented.
     pub fn new(mut image: PeImage) -> Result<Self> {
         image.try_update_layout()?;
         let source_layout = RawLayoutFingerprint::from_image(&image)?;
@@ -72,6 +77,14 @@ impl PeFile {
     }
 
     /// Parse a complete raw PE file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`PeImage::parse`] fails, if `data` ends before the
+    /// headers and raw section data, or if the Security directory (attribute
+    /// certificate table) has only one of its file offset and size set, lies
+    /// outside the file or inside the image, is not 8-byte aligned, or does not
+    /// parse.
     pub fn parse(data: &[u8]) -> Result<Self> {
         let image = PeImage::parse(data)?;
         let image_end = raw_image_end(&image)?;
@@ -103,14 +116,12 @@ impl PeFile {
                 }
                 if start < image_end {
                     return Err(Error::invalid_data_directory(format!(
-                        "certificate table at {:#x} overlaps the mapped image ending at {:#x}",
-                        start, image_end
+                        "certificate table at {start:#x} overlaps the mapped image ending at {image_end:#x}"
                     )));
                 }
                 if !start.is_multiple_of(8) {
                     return Err(Error::invalid_data_directory(format!(
-                        "certificate table offset {:#x} is not 8-byte aligned",
-                        start
+                        "certificate table offset {start:#x} is not 8-byte aligned"
                     )));
                 }
                 SecurityDirectory::parse(&data[start..end])?;
@@ -135,6 +146,12 @@ impl PeFile {
     ///
     /// The reader must report its size because an overlay has no header field
     /// that identifies its end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the reader does not report its size, if
+    /// `base_offset` lies past the end of the source, if reading fails, or for
+    /// any condition listed on [`Self::parse`].
     pub fn read_from<R: ReadAt>(reader: &R, base_offset: u64) -> Result<Self> {
         let source_size = reader
             .size()
@@ -148,12 +165,22 @@ impl PeFile {
     }
 
     /// Load a complete raw PE file from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or for any condition listed
+    /// on [`Self::parse`].
     #[cfg(feature = "std")]
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         Self::parse(&std::fs::read(path)?)
     }
 
     /// Read a complete raw PE file from a sequential `nostdio` stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the stream fails or for any condition
+    /// listed on [`Self::parse`].
     pub fn from_stream<R: nostdio::Read>(stream: &mut R) -> Result<Self> {
         let mut data = Vec::new();
         stream
@@ -207,6 +234,11 @@ impl PeFile {
     }
 
     /// Parse the attribute certificate table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored certificate range exceeds the overlay or
+    /// the `WIN_CERTIFICATE` entries are malformed.
     pub fn security(&self) -> Result<Option<SecurityDirectory>> {
         let Some(range) = &self.certificate_range else {
             return Ok(None);
@@ -218,6 +250,12 @@ impl PeFile {
     }
 
     /// Return raw bytes for any standard data directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stored certificate range exceeds the overlay,
+    /// or for non-Security directories, any condition listed on
+    /// [`PeImage::directory_data`].
     pub fn directory_data(&self, dir_type: DataDirectoryType) -> Result<Option<Vec<u8>>> {
         if dir_type != DataDirectoryType::Security {
             return self.image.directory_data(dir_type);
@@ -234,6 +272,11 @@ impl PeFile {
     /// Parse debug entries from the raw file, including payloads that are
     /// reachable only through `PointerToRawData` and therefore disappear from
     /// a loader-mapped image.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if building or re-parsing the raw file fails, or if
+    /// the debug directory or its payloads are unreadable or malformed.
     pub fn debug_info(&self) -> Result<Option<crate::debug::DebugInfo>> {
         let raw = self.try_build()?;
         let image = PeImage::parse(&raw)?;
@@ -261,13 +304,19 @@ impl PeFile {
 
     /// Replace or add the attribute certificate table while preserving other
     /// overlay bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the certificate table cannot be encoded, if the
+    /// stored certificate range exceeds the overlay, or if the aligned overlay
+    /// size overflows.
     pub fn set_security(&mut self, directory: &SecurityDirectory) -> Result<()> {
         if directory.certificates.is_empty() {
             self.clear_security();
             return Ok(());
         }
 
-        let certificate_data = SecurityBuilder::new().try_build(directory)?;
+        let certificate_data = SecurityBuilder::try_build(directory)?;
         let range = if let Some(old_range) = self.certificate_range.take() {
             if old_range.end > self.overlay.len() || old_range.start > old_range.end {
                 return Err(Error::invalid_data_directory(
@@ -303,6 +352,13 @@ impl PeFile {
     }
 
     /// Build a raw PE file with its overlay and certificate table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the certificate table size or file offset exceeds
+    /// `u32`, if the stored certificate range exceeds the overlay, if the file
+    /// size overflows, or if building the image fails (see
+    /// [`PeImage::try_build`]).
     pub fn try_build(&self) -> Result<Vec<u8>> {
         let mut pe = self.image.clone();
         let certificate_size = self
@@ -384,6 +440,10 @@ impl PeFile {
 
     /// Build a raw PE file, panicking if its manually-constructed state is
     /// invalid. Prefer [`Self::try_build`] for untrusted state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Self::try_build`] returns an error.
     #[must_use]
     pub fn build(&self) -> Vec<u8> {
         self.try_build()
@@ -391,6 +451,11 @@ impl PeFile {
     }
 
     /// Write the complete raw PE file to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::try_build`] fails or the file cannot be
+    /// created or written.
     #[cfg(feature = "std")]
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = self.try_build()?;
@@ -400,6 +465,10 @@ impl PeFile {
     }
 
     /// Serialize the complete raw file to a `nostdio` stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::try_build`] fails or the stream write fails.
     pub fn write_to<W: nostdio::Write>(&self, stream: &mut W) -> Result<()> {
         stream
             .write_all(&self.try_build()?)

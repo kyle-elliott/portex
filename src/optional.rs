@@ -5,33 +5,51 @@ use crate::prelude::*;
 use crate::reader::ReadAt;
 use crate::{Error, Result};
 
-/// PE32 magic number.
+/// PE32 magic number (`IMAGE_NT_OPTIONAL_HDR32_MAGIC`).
 pub const PE32_MAGIC: u16 = 0x10B;
-/// PE32+ (64-bit) magic number.
+/// PE32+ (64-bit) magic number (`IMAGE_NT_OPTIONAL_HDR64_MAGIC`).
 pub const PE32PLUS_MAGIC: u16 = 0x20B;
 
-/// Windows subsystem values.
+/// Windows subsystem values (`IMAGE_SUBSYSTEM_*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 #[non_exhaustive]
 pub enum Subsystem {
+    /// Unknown subsystem (`IMAGE_SUBSYSTEM_UNKNOWN`).
     Unknown = 0,
+    /// Device drivers and native Windows processes (`IMAGE_SUBSYSTEM_NATIVE`).
     Native = 1,
+    /// Windows graphical user interface (`IMAGE_SUBSYSTEM_WINDOWS_GUI`).
     WindowsGui = 2,
+    /// Windows character-mode console (`IMAGE_SUBSYSTEM_WINDOWS_CUI`).
     WindowsCui = 3,
+    /// OS/2 character subsystem (`IMAGE_SUBSYSTEM_OS2_CUI`).
     Os2Cui = 5,
+    /// POSIX character subsystem (`IMAGE_SUBSYSTEM_POSIX_CUI`).
     PosixCui = 7,
+    /// Native Win9x driver (`IMAGE_SUBSYSTEM_NATIVE_WINDOWS`).
     NativeWindows = 8,
+    /// Windows CE (`IMAGE_SUBSYSTEM_WINDOWS_CE_GUI`).
     WindowsCeGui = 9,
+    /// EFI application (`IMAGE_SUBSYSTEM_EFI_APPLICATION`).
     EfiApplication = 10,
+    /// EFI driver with boot services (`IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER`).
     EfiBootServiceDriver = 11,
+    /// EFI driver with run-time services (`IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER`).
     EfiRuntimeDriver = 12,
+    /// EFI ROM image (`IMAGE_SUBSYSTEM_EFI_ROM`).
     EfiRom = 13,
+    /// Xbox (`IMAGE_SUBSYSTEM_XBOX`).
     Xbox = 14,
+    /// Windows boot application (`IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION`).
     WindowsBootApplication = 16,
 }
 
 impl Subsystem {
+    /// Convert from a raw optional-header `Subsystem` value.
+    ///
+    /// Returns `None` for values this crate does not recognize.
+    #[must_use]
     pub fn from_u16(value: u16) -> Option<Self> {
         match value {
             0 => Some(Self::Unknown),
@@ -53,102 +71,185 @@ impl Subsystem {
     }
 }
 
-/// DLL characteristics flags.
+/// DLL characteristics flags (`IMAGE_DLLCHARACTERISTICS_*`).
 pub mod dll_characteristics {
+    /// Image can handle a high-entropy 64-bit virtual address space.
     pub const HIGH_ENTROPY_VA: u16 = 0x0020;
+    /// Image can be relocated at load time (ASLR).
     pub const DYNAMIC_BASE: u16 = 0x0040;
+    /// Code integrity checks are enforced.
     pub const FORCE_INTEGRITY: u16 = 0x0080;
+    /// Image is compatible with data execution prevention (NX).
     pub const NX_COMPAT: u16 = 0x0100;
+    /// Image is isolation aware, but should not be isolated.
     pub const NO_ISOLATION: u16 = 0x0200;
+    /// Image does not use structured exception handling; no SE handler may be called.
     pub const NO_SEH: u16 = 0x0400;
+    /// Do not bind the image.
     pub const NO_BIND: u16 = 0x0800;
+    /// Image must execute in an `AppContainer`.
     pub const APPCONTAINER: u16 = 0x1000;
+    /// Image is a WDM driver.
     pub const WDM_DRIVER: u16 = 0x2000;
+    /// Image supports Control Flow Guard.
     pub const GUARD_CF: u16 = 0x4000;
+    /// Image is Terminal Server aware.
     pub const TERMINAL_SERVER_AWARE: u16 = 0x8000;
 }
 
-/// PE32 Optional Header (32-bit).
+/// PE32 Optional Header (`IMAGE_OPTIONAL_HEADER32`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionalHeader32 {
+    /// Magic number identifying the format; [`PE32_MAGIC`] for PE32.
     pub magic: u16,
+    /// Linker major version number.
     pub major_linker_version: u8,
+    /// Linker minor version number.
     pub minor_linker_version: u8,
+    /// Total size in bytes of all code sections.
     pub size_of_code: u32,
+    /// Total size in bytes of all initialized-data sections.
     pub size_of_initialized_data: u32,
+    /// Total size in bytes of all uninitialized-data (BSS) sections.
     pub size_of_uninitialized_data: u32,
+    /// RVA of the entry point, or 0 if there is none.
     pub address_of_entry_point: u32,
+    /// RVA of the beginning of the code section.
     pub base_of_code: u32,
+    /// RVA of the beginning of the data section (PE32 only).
     pub base_of_data: u32,
+    /// Preferred virtual address of the image's first byte when loaded.
     pub image_base: u32,
+    /// Alignment in bytes of sections when loaded in memory.
     pub section_alignment: u32,
+    /// Alignment in bytes of section raw data in the file.
     pub file_alignment: u32,
+    /// Major version of the required operating system.
     pub major_operating_system_version: u16,
+    /// Minor version of the required operating system.
     pub minor_operating_system_version: u16,
+    /// Major version of the image.
     pub major_image_version: u16,
+    /// Minor version of the image.
     pub minor_image_version: u16,
+    /// Major version of the subsystem.
     pub major_subsystem_version: u16,
+    /// Minor version of the subsystem.
     pub minor_subsystem_version: u16,
+    /// Reserved; must be zero.
     pub win32_version_value: u32,
+    /// Size in bytes of the loaded image, a multiple of `section_alignment`.
     pub size_of_image: u32,
+    /// Combined size in bytes of all headers, rounded up to `file_alignment`.
     pub size_of_headers: u32,
+    /// Image file checksum.
     pub check_sum: u32,
+    /// Subsystem required to run the image (see [`Subsystem`]).
     pub subsystem: u16,
+    /// DLL characteristics flags (see [`dll_characteristics`]).
     pub dll_characteristics: u16,
+    /// Size in bytes of the stack to reserve.
     pub size_of_stack_reserve: u32,
+    /// Size in bytes of the stack to commit.
     pub size_of_stack_commit: u32,
+    /// Size in bytes of the local heap to reserve.
     pub size_of_heap_reserve: u32,
+    /// Size in bytes of the local heap to commit.
     pub size_of_heap_commit: u32,
+    /// Reserved; must be zero.
     pub loader_flags: u32,
+    /// Number of data-directory entries that follow the header.
     pub number_of_rva_and_sizes: u32,
+    /// Data-directory entries (`IMAGE_DATA_DIRECTORY` array).
     pub data_directories: Vec<DataDirectory>,
 }
 
-/// PE32+ Optional Header (64-bit).
+/// PE32+ Optional Header (`IMAGE_OPTIONAL_HEADER64`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionalHeader64 {
+    /// Magic number identifying the format; [`PE32PLUS_MAGIC`] for PE32+.
     pub magic: u16,
+    /// Linker major version number.
     pub major_linker_version: u8,
+    /// Linker minor version number.
     pub minor_linker_version: u8,
+    /// Total size in bytes of all code sections.
     pub size_of_code: u32,
+    /// Total size in bytes of all initialized-data sections.
     pub size_of_initialized_data: u32,
+    /// Total size in bytes of all uninitialized-data (BSS) sections.
     pub size_of_uninitialized_data: u32,
+    /// RVA of the entry point, or 0 if there is none.
     pub address_of_entry_point: u32,
+    /// RVA of the beginning of the code section.
     pub base_of_code: u32,
+    /// Preferred virtual address of the image's first byte when loaded.
     pub image_base: u64,
+    /// Alignment in bytes of sections when loaded in memory.
     pub section_alignment: u32,
+    /// Alignment in bytes of section raw data in the file.
     pub file_alignment: u32,
+    /// Major version of the required operating system.
     pub major_operating_system_version: u16,
+    /// Minor version of the required operating system.
     pub minor_operating_system_version: u16,
+    /// Major version of the image.
     pub major_image_version: u16,
+    /// Minor version of the image.
     pub minor_image_version: u16,
+    /// Major version of the subsystem.
     pub major_subsystem_version: u16,
+    /// Minor version of the subsystem.
     pub minor_subsystem_version: u16,
+    /// Reserved; must be zero.
     pub win32_version_value: u32,
+    /// Size in bytes of the loaded image, a multiple of `section_alignment`.
     pub size_of_image: u32,
+    /// Combined size in bytes of all headers, rounded up to `file_alignment`.
     pub size_of_headers: u32,
+    /// Image file checksum.
     pub check_sum: u32,
+    /// Subsystem required to run the image (see [`Subsystem`]).
     pub subsystem: u16,
+    /// DLL characteristics flags (see [`dll_characteristics`]).
     pub dll_characteristics: u16,
+    /// Size in bytes of the stack to reserve.
     pub size_of_stack_reserve: u64,
+    /// Size in bytes of the stack to commit.
     pub size_of_stack_commit: u64,
+    /// Size in bytes of the local heap to reserve.
     pub size_of_heap_reserve: u64,
+    /// Size in bytes of the local heap to commit.
     pub size_of_heap_commit: u64,
+    /// Reserved; must be zero.
     pub loader_flags: u32,
+    /// Number of data-directory entries that follow the header.
     pub number_of_rva_and_sizes: u32,
+    /// Data-directory entries (`IMAGE_DATA_DIRECTORY` array).
     pub data_directories: Vec<DataDirectory>,
 }
 
 /// Combined optional header enum for PE32 and PE32+.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OptionalHeader {
+    /// 32-bit PE32 optional header.
     Pe32(OptionalHeader32),
+    /// 64-bit PE32+ optional header.
     Pe32Plus(OptionalHeader64),
 }
 
 impl OptionalHeader32 {
+    /// Size in bytes of the fixed part of the header, excluding data directories.
     pub const BASE_SIZE: usize = 96;
 
+    /// Parse a PE32 optional header, including its data directories.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `data` is shorter than the fixed
+    /// header or than the data directories declared by `NumberOfRvaAndSizes`,
+    /// an invalid-magic error if `Magic` is not [`PE32_MAGIC`], or an
+    /// invalid-data-directory error if the declared size overflows.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::BASE_SIZE {
             return Err(Error::buffer_too_small(Self::BASE_SIZE, data.len()));
@@ -213,17 +314,28 @@ impl OptionalHeader32 {
         })
     }
 
+    /// Serialized size in bytes, including data directories.
+    #[must_use]
     pub fn size(&self) -> usize {
         Self::BASE_SIZE + self.data_directories.len() * DataDirectory::SIZE
     }
 
     /// Write the PE32 optional header to a buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `buf` is shorter than [`Self::size`].
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         let total_size = self.size();
         if buf.len() < total_size {
             return Err(Error::buffer_too_small(total_size, buf.len()));
         }
+        self.encode_into(buf);
+        Ok(())
+    }
 
+    /// Encode the header into `buf`, which must be at least [`Self::size`] bytes.
+    fn encode_into(&self, buf: &mut [u8]) {
         buf[0..2].copy_from_slice(&self.magic.to_le_bytes());
         buf[2] = self.major_linker_version;
         buf[3] = self.minor_linker_version;
@@ -254,28 +366,38 @@ impl OptionalHeader32 {
         buf[84..88].copy_from_slice(&self.size_of_heap_commit.to_le_bytes());
         buf[88..92].copy_from_slice(&self.loader_flags.to_le_bytes());
         buf[92..96].copy_from_slice(&self.number_of_rva_and_sizes.to_le_bytes());
-
-        // Write data directories
-        let mut offset = Self::BASE_SIZE;
-        for dir in &self.data_directories {
-            dir.write(&mut buf[offset..offset + DataDirectory::SIZE])?;
-            offset += DataDirectory::SIZE;
-        }
-
-        Ok(())
+        encode_data_directories(&self.data_directories, &mut buf[Self::BASE_SIZE..]);
     }
 
     /// Serialize to a byte vector.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = vec![0u8; self.size()];
-        self.write(&mut buf).expect("buffer size is correct");
+        self.encode_into(&mut buf);
         buf
     }
 }
 
+/// Encode `dirs` as consecutive `IMAGE_DATA_DIRECTORY` entries at the start of `buf`.
+fn encode_data_directories(dirs: &[DataDirectory], buf: &mut [u8]) {
+    let (entries, _) = buf.as_chunks_mut::<{ DataDirectory::SIZE }>();
+    for (dir, out) in dirs.iter().zip(entries) {
+        *out = dir.to_bytes();
+    }
+}
+
 impl OptionalHeader64 {
+    /// Size in bytes of the fixed part of the header, excluding data directories.
     pub const BASE_SIZE: usize = 112;
 
+    /// Parse a PE32+ optional header, including its data directories.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `data` is shorter than the fixed
+    /// header or than the data directories declared by `NumberOfRvaAndSizes`,
+    /// an invalid-magic error if `Magic` is not [`PE32PLUS_MAGIC`], or an
+    /// invalid-data-directory error if the declared size overflows.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::BASE_SIZE {
             return Err(Error::buffer_too_small(Self::BASE_SIZE, data.len()));
@@ -350,17 +472,28 @@ impl OptionalHeader64 {
         })
     }
 
+    /// Serialized size in bytes, including data directories.
+    #[must_use]
     pub fn size(&self) -> usize {
         Self::BASE_SIZE + self.data_directories.len() * DataDirectory::SIZE
     }
 
     /// Write the PE32+ optional header to a buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `buf` is shorter than [`Self::size`].
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         let total_size = self.size();
         if buf.len() < total_size {
             return Err(Error::buffer_too_small(total_size, buf.len()));
         }
+        self.encode_into(buf);
+        Ok(())
+    }
 
+    /// Encode the header into `buf`, which must be at least [`Self::size`] bytes.
+    fn encode_into(&self, buf: &mut [u8]) {
         buf[0..2].copy_from_slice(&self.magic.to_le_bytes());
         buf[2] = self.major_linker_version;
         buf[3] = self.minor_linker_version;
@@ -390,26 +523,27 @@ impl OptionalHeader64 {
         buf[96..104].copy_from_slice(&self.size_of_heap_commit.to_le_bytes());
         buf[104..108].copy_from_slice(&self.loader_flags.to_le_bytes());
         buf[108..112].copy_from_slice(&self.number_of_rva_and_sizes.to_le_bytes());
-
-        // Write data directories
-        let mut offset = Self::BASE_SIZE;
-        for dir in &self.data_directories {
-            dir.write(&mut buf[offset..offset + DataDirectory::SIZE])?;
-            offset += DataDirectory::SIZE;
-        }
-
-        Ok(())
+        encode_data_directories(&self.data_directories, &mut buf[Self::BASE_SIZE..]);
     }
 
     /// Serialize to a byte vector.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = vec![0u8; self.size()];
-        self.write(&mut buf).expect("buffer size is correct");
+        self.encode_into(&mut buf);
         buf
     }
 }
 
 impl OptionalHeader {
+    /// Parse a PE32 or PE32+ optional header, selected by its `Magic` field.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `data` is too short, an
+    /// invalid-magic error if `Magic` is neither [`PE32_MAGIC`] nor
+    /// [`PE32PLUS_MAGIC`], or any error from [`OptionalHeader32::parse`] /
+    /// [`OptionalHeader64::parse`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < 2 {
             return Err(Error::buffer_too_small(2, data.len()));
@@ -423,14 +557,20 @@ impl OptionalHeader {
         }
     }
 
+    /// Whether this is a PE32 (32-bit) optional header.
+    #[must_use]
     pub fn is_pe32(&self) -> bool {
         matches!(self, Self::Pe32(_))
     }
 
+    /// Whether this is a PE32+ (64-bit) optional header.
+    #[must_use]
     pub fn is_pe32plus(&self) -> bool {
         matches!(self, Self::Pe32Plus(_))
     }
 
+    /// Serialized size in bytes, including data directories.
+    #[must_use]
     pub fn size(&self) -> usize {
         match self {
             Self::Pe32(h) => h.size(),
@@ -438,6 +578,8 @@ impl OptionalHeader {
         }
     }
 
+    /// Data-directory entries that follow the fixed header.
+    #[must_use]
     pub fn data_directories(&self) -> &[DataDirectory] {
         match self {
             Self::Pe32(h) => &h.data_directories,
@@ -454,6 +596,10 @@ impl OptionalHeader {
     }
 
     /// Write the optional header to a buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `buf` is shorter than [`Self::size`].
     pub fn write(&self, buf: &mut [u8]) -> Result<()> {
         match self {
             Self::Pe32(h) => h.write(buf),
@@ -462,6 +608,7 @@ impl OptionalHeader {
     }
 
     /// Serialize to a byte vector.
+    #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
             Self::Pe32(h) => h.to_bytes(),
@@ -470,27 +617,29 @@ impl OptionalHeader {
     }
 
     /// Parse an optional header from a positional reader at the given offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read error if the header cannot be read, an invalid-magic
+    /// error for an unknown `Magic`, an invalid-data-directory error if the
+    /// declared size overflows or exceeds the `u16` `SizeOfOptionalHeader`
+    /// range, or any error from [`Self::parse`].
     pub fn read_from<R: ReadAt>(reader: &R, offset: u64) -> Result<Self> {
-        // First read the magic to determine type
+        // First read the magic to determine the layout: fixed size and the
+        // offset of `NumberOfRvaAndSizes`.
         let magic = reader.read_u16_at(offset)?;
-
-        // Determine size needed
-        let base_size = match magic {
-            PE32_MAGIC => OptionalHeader32::BASE_SIZE,
-            PE32PLUS_MAGIC => OptionalHeader64::BASE_SIZE,
+        let (base_size, count_relative) = match magic {
+            PE32_MAGIC => (OptionalHeader32::BASE_SIZE, 92u64),
+            PE32PLUS_MAGIC => (OptionalHeader64::BASE_SIZE, 108u64),
             _ => return Err(Error::invalid_optional_header_magic(magic)),
         };
 
-        // Read the base header to get number of data directories
-        let count_relative = match magic {
-            PE32_MAGIC => 92,      // Offset of number_of_rva_and_sizes in PE32
-            PE32PLUS_MAGIC => 108, // Offset in PE32+
-            _ => unreachable!(),
-        };
+        // Read the number of data directories
         let num_dirs_offset = offset
             .checked_add(count_relative)
             .ok_or_else(|| Error::invalid_data_directory("optional-header offset overflow"))?;
-        let num_dirs = reader.read_u32_at(num_dirs_offset)? as usize;
+        let num_dirs = usize::try_from(reader.read_u32_at(num_dirs_offset)?)
+            .map_err(|_| Error::invalid_data_directory("data-directory count is too large"))?;
 
         let total_size = num_dirs
             .checked_mul(DataDirectory::SIZE)
@@ -513,6 +662,14 @@ impl OptionalHeader {
     /// `NumberOfRvaAndSizes` fits in that declared region, preventing malformed
     /// files from making the parser consume section headers as data-directory
     /// entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns a buffer-too-small error if `declared_size` cannot hold the
+    /// fixed header, an invalid-magic error for an unknown `Magic`, an
+    /// invalid-data-directory error if the data directories overflow or exceed
+    /// `declared_size`, a read error if the bytes cannot be read, or any error
+    /// from [`Self::parse`].
     pub fn read_sized_from<R: ReadAt>(
         reader: &R,
         offset: u64,
@@ -545,8 +702,7 @@ impl OptionalHeader {
             .ok_or_else(|| Error::invalid_data_directory("optional-header size overflow"))?;
         if total_size > declared_size {
             return Err(Error::invalid_data_directory(format!(
-                "{} data directories require {} optional-header bytes, but COFF declares {}",
-                num_dirs, total_size, declared_size
+                "{num_dirs} data directories require {total_size} optional-header bytes, but COFF declares {declared_size}"
             )));
         }
 
@@ -555,6 +711,7 @@ impl OptionalHeader {
     }
 
     /// Get the entry point RVA.
+    #[must_use]
     pub fn address_of_entry_point(&self) -> u32 {
         match self {
             Self::Pe32(h) => h.address_of_entry_point,
@@ -562,15 +719,17 @@ impl OptionalHeader {
         }
     }
 
-    /// Get the image base address.
+    /// Get the preferred image base virtual address.
+    #[must_use]
     pub fn image_base(&self) -> u64 {
         match self {
-            Self::Pe32(h) => h.image_base as u64,
+            Self::Pe32(h) => u64::from(h.image_base),
             Self::Pe32Plus(h) => h.image_base,
         }
     }
 
-    /// Get section alignment.
+    /// Get section alignment in bytes.
+    #[must_use]
     pub fn section_alignment(&self) -> u32 {
         match self {
             Self::Pe32(h) => h.section_alignment,
@@ -578,7 +737,8 @@ impl OptionalHeader {
         }
     }
 
-    /// Get file alignment.
+    /// Get file alignment in bytes.
+    #[must_use]
     pub fn file_alignment(&self) -> u32 {
         match self {
             Self::Pe32(h) => h.file_alignment,
@@ -586,7 +746,8 @@ impl OptionalHeader {
         }
     }
 
-    /// Get size of image.
+    /// Get size of the loaded image in bytes.
+    #[must_use]
     pub fn size_of_image(&self) -> u32 {
         match self {
             Self::Pe32(h) => h.size_of_image,
@@ -594,7 +755,8 @@ impl OptionalHeader {
         }
     }
 
-    /// Get size of headers.
+    /// Get combined size of all headers in bytes.
+    #[must_use]
     pub fn size_of_headers(&self) -> u32 {
         match self {
             Self::Pe32(h) => h.size_of_headers,

@@ -1,6 +1,6 @@
 //! Security directory (Authenticode) parsing.
 //!
-//! The security directory contains WIN_CERTIFICATE structures for code signing.
+//! The security directory contains `WIN_CERTIFICATE` structures for code signing.
 //! Unlike other data directories, this one uses a **file offset** (not RVA).
 //!
 //! # Examples
@@ -24,12 +24,12 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// WIN_CERTIFICATE revision values.
+/// `WIN_CERTIFICATE` revision values (`wRevision`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertificateRevision {
-    /// WIN_CERT_REVISION_1_0
+    /// `WIN_CERT_REVISION_1_0`
     Revision1,
-    /// WIN_CERT_REVISION_2_0
+    /// `WIN_CERT_REVISION_2_0`
     Revision2,
     /// Revision not known to this version of the crate.
     Unknown(u16),
@@ -37,6 +37,7 @@ pub enum CertificateRevision {
 
 impl CertificateRevision {
     /// Convert from raw u16.
+    #[must_use]
     pub const fn from_u16(value: u16) -> Self {
         match value {
             0x0100 => Self::Revision1,
@@ -45,6 +46,8 @@ impl CertificateRevision {
         }
     }
 
+    /// Convert to the raw `wRevision` value.
+    #[must_use]
     pub const fn as_u16(self) -> u16 {
         match self {
             Self::Revision1 => 0x0100,
@@ -54,16 +57,16 @@ impl CertificateRevision {
     }
 }
 
-/// WIN_CERTIFICATE type values.
+/// `WIN_CERTIFICATE` type values (`wCertificateType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertificateType {
-    /// WIN_CERT_TYPE_X509 - X.509 certificate
+    /// `WIN_CERT_TYPE_X509` - X.509 certificate
     X509,
-    /// WIN_CERT_TYPE_PKCS_SIGNED_DATA - PKCS#7 SignedData
+    /// `WIN_CERT_TYPE_PKCS_SIGNED_DATA` - PKCS#7 `SignedData`
     PkcsSignedData,
-    /// WIN_CERT_TYPE_RESERVED_1
+    /// `WIN_CERT_TYPE_RESERVED_1`
     Reserved1,
-    /// WIN_CERT_TYPE_TS_STACK_SIGNED - Terminal Server Protocol Stack
+    /// `WIN_CERT_TYPE_TS_STACK_SIGNED` - Terminal Server Protocol Stack
     TsStackSigned,
     /// Certificate type not known to this version of the crate.
     Unknown(u16),
@@ -71,6 +74,7 @@ pub enum CertificateType {
 
 impl CertificateType {
     /// Convert from raw u16.
+    #[must_use]
     pub const fn from_u16(value: u16) -> Self {
         match value {
             0x0001 => Self::X509,
@@ -81,6 +85,8 @@ impl CertificateType {
         }
     }
 
+    /// Convert to the raw `wCertificateType` value.
+    #[must_use]
     pub const fn as_u16(self) -> u16 {
         match self {
             Self::X509 => 0x0001,
@@ -92,8 +98,12 @@ impl CertificateType {
     }
 }
 
-/// WIN_CERTIFICATE structure.
+/// `WIN_CERTIFICATE` structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "certificate_type mirrors the spec field wCertificateType; `type` is a keyword"
+)]
 pub struct Certificate {
     /// Total length including the header but excluding alignment padding.
     pub length: u32,
@@ -111,12 +121,22 @@ impl Certificate {
 
     /// Parse a single certificate from a byte slice.
     /// Returns the certificate and number of bytes consumed (including padding).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::BufferTooSmall`](crate::error::ErrorKind::BufferTooSmall)
+    /// if `data` is shorter than the 8-byte header, and
+    /// [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
+    /// if `dwLength` is smaller than the header or the (8-byte aligned) length
+    /// exceeds `data`.
     pub fn parse(data: &[u8]) -> Result<(Self, usize)> {
         if data.len() < Self::HEADER_SIZE {
             return Err(Error::buffer_too_small(Self::HEADER_SIZE, data.len()));
         }
 
-        let length = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let length_u32 = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let length = usize::try_from(length_u32)
+            .map_err(|_| Error::invalid_data_directory("certificate length exceeds usize"))?;
         let revision_raw = u16::from_le_bytes([data[4], data[5]]);
         let cert_type_raw = u16::from_le_bytes([data[6], data[7]]);
 
@@ -149,7 +169,7 @@ impl Certificate {
 
         Ok((
             Self {
-                length: length as u32,
+                length: length_u32,
                 revision,
                 certificate_type,
                 data: cert_data,
@@ -168,6 +188,12 @@ pub struct SecurityDirectory {
 
 impl SecurityDirectory {
     /// Parse all certificates from the security directory data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
+    /// if trailing bytes cannot hold a certificate header, and propagates any
+    /// error from [`Certificate::parse`].
     pub fn parse(data: &[u8]) -> Result<Self> {
         let mut certificates = Vec::new();
         let mut offset = 0;
@@ -202,6 +228,7 @@ pub struct SecurityBuilder;
 
 impl SecurityBuilder {
     /// Create a new builder.
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -209,13 +236,24 @@ impl SecurityBuilder {
     /// Calculate the total size needed for all certificates.
     ///
     /// Each certificate is 8-byte aligned.
-    pub fn calculate_size(&self, directory: &SecurityDirectory) -> usize {
-        self.try_calculate_size(directory)
+    ///
+    /// # Panics
+    ///
+    /// Panics whenever [`Self::try_calculate_size`] would return an error.
+    #[must_use]
+    pub fn calculate_size(directory: &SecurityDirectory) -> usize {
+        Self::try_calculate_size(directory)
             .expect("certificate table size overflow: use try_calculate_size()")
     }
 
-    /// Calculate the table size with checked WIN_CERTIFICATE lengths.
-    pub fn try_calculate_size(&self, directory: &SecurityDirectory) -> Result<usize> {
+    /// Calculate the table size with checked `WIN_CERTIFICATE` lengths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
+    /// if any certificate length or the total table size overflows or exceeds
+    /// `u32`.
+    pub fn try_calculate_size(directory: &SecurityDirectory) -> Result<usize> {
         let size = directory
             .certificates
             .iter()
@@ -245,20 +283,31 @@ impl SecurityBuilder {
     ///
     /// Returns the raw bytes to be appended to the file's overlay area.
     /// After appending, update the Security data directory with:
-    /// - virtual_address = file offset where data was appended
+    /// - `virtual_address` = file offset where data was appended
     /// - size = returned size
-    pub fn build(&self, directory: &SecurityDirectory) -> Vec<u8> {
-        self.try_build(directory)
+    ///
+    /// # Panics
+    ///
+    /// Panics whenever [`Self::try_build`] would return an error.
+    #[must_use]
+    pub fn build(directory: &SecurityDirectory) -> Vec<u8> {
+        Self::try_build(directory)
             .expect("certificate build failed: use try_build() for fallible serialization")
     }
 
     /// Build the security directory with checked lengths and alignments.
-    pub fn try_build(&self, directory: &SecurityDirectory) -> Result<Vec<u8>> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
+    /// if any certificate length or the total table size overflows or exceeds
+    /// `u32`.
+    pub fn try_build(directory: &SecurityDirectory) -> Result<Vec<u8>> {
         if directory.certificates.is_empty() {
             return Ok(Vec::new());
         }
 
-        let total_size = self.try_calculate_size(directory)?;
+        let total_size = Self::try_calculate_size(directory)?;
         let mut data = vec![0u8; total_size];
         let mut offset = 0;
 
@@ -332,11 +381,10 @@ mod tests {
 
     #[test]
     fn test_builder_empty() {
-        let builder = SecurityBuilder::new();
         let dir = SecurityDirectory::default();
-        let data = builder.build(&dir);
-        assert!(data.is_empty());
-        assert_eq!(builder.calculate_size(&dir), 0);
+        let data = SecurityBuilder::build(&dir);
+        assert_eq!(data, [] as [u8; 0]);
+        assert_eq!(SecurityBuilder::calculate_size(&dir), 0);
     }
 
     #[test]
@@ -352,8 +400,7 @@ mod tests {
             certificates: vec![cert],
         };
 
-        let builder = SecurityBuilder::new();
-        let data = builder.build(&dir);
+        let data = SecurityBuilder::build(&dir);
 
         // Parse it back
         let parsed = SecurityDirectory::parse(&data).unwrap();
@@ -383,8 +430,7 @@ mod tests {
             certificates: vec![cert],
         };
 
-        let builder = SecurityBuilder::new();
-        let size = builder.calculate_size(&dir);
+        let size = SecurityBuilder::calculate_size(&dir);
         assert_eq!(size % 8, 0); // Must be 8-byte aligned
         assert_eq!(size, 16); // 11 rounded up to 16
     }

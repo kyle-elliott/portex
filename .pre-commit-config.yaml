@@ -29,17 +29,17 @@ repos:
         name: clippy (all features and targets)
         entry: cargo clippy --all-features --all-targets -- -D warnings
         language: system
-        files: '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/.*\.rs|tests/.*\.rs)$'
+        files: '^(Cargo\.(toml|lock)|clippy\.toml|rust-toolchain\.toml|src/.*\.rs|tests/.*\.rs)$'
         pass_filenames: false
       - id: clippy-no-std
         name: clippy (no_std + alloc, all targets)
         entry: cargo clippy --no-default-features --all-targets -- -D warnings
         language: system
-        files: '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/.*\.rs|tests/.*\.rs)$'
+        files: '^(Cargo\.(toml|lock)|clippy\.toml|rust-toolchain\.toml|src/.*\.rs|tests/.*\.rs)$'
         pass_filenames: false
       - id: clippy-fuzz
         name: clippy (fuzz package)
         entry: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
         language: system
-        files: '^(Cargo\.(toml|lock)|rust-toolchain\.toml|src/.*\.rs|fuzz/(Cargo\.(toml|lock)|fuzz_targets/.*\.rs))$'
+        files: '^(Cargo\.(toml|lock)|clippy\.toml|rust-toolchain\.toml|src/.*\.rs|fuzz/(Cargo\.(toml|lock)|fuzz_targets/.*\.rs))$'
         pass_filenames: false

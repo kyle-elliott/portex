@@ -1,7 +1,7 @@
 //! CLR (Common Language Runtime) header parsing.
 //!
 //! This module provides minimal CLR header parsing for .NET assemblies.
-//! The CLI header (IMAGE_COR20_HEADER) is located via DataDirectory index 14 (ClrRuntime).
+//! The CLI header (`IMAGE_COR20_HEADER`) is located via data directory index 14 (`ClrRuntime`).
 //!
 //! For full metadata parsing (BSJB, streams, tables), see the `clrmeta` crate.
 //!
@@ -27,7 +27,7 @@
 use crate::prelude::*;
 use crate::{Error, Result};
 
-/// CLI header (IMAGE_COR20_HEADER).
+/// CLI header (`IMAGE_COR20_HEADER`).
 ///
 /// This 72-byte structure is the entry point for .NET metadata.
 /// Located via `DataDirectoryType::ClrRuntime` (index 14).
@@ -44,7 +44,7 @@ pub struct CliHeader {
     pub metadata_rva: u32,
     /// Size of metadata.
     pub metadata_size: u32,
-    /// Flags (COMIMAGE_FLAGS_*).
+    /// Flags (`COMIMAGE_FLAGS_*`).
     pub flags: u32,
     /// Entry point token (MethodDef/File) or native entry point RVA.
     pub entry_point_token_or_rva: u32,
@@ -60,9 +60,9 @@ pub struct CliHeader {
     pub code_manager_table_rva: u32,
     /// Size of code manager table.
     pub code_manager_table_size: u32,
-    /// RVA of VTable fixups.
+    /// RVA of `VTable` fixups.
     pub vtable_fixups_rva: u32,
-    /// Size of VTable fixups.
+    /// Size of `VTable` fixups.
     pub vtable_fixups_size: u32,
     /// RVA of export address table jumps.
     pub export_address_table_jumps_rva: u32,
@@ -77,23 +77,32 @@ pub struct CliHeader {
 impl CliHeader {
     /// Size of the CLI header in bytes.
     pub const SIZE: usize = 72;
+    /// Size of the CLI header in bytes, as the `u32` stored in `cb`.
+    pub const SIZE_U32: u32 = 72;
 
-    /// COMIMAGE_FLAGS_ILONLY - Contains only IL code.
+    /// `COMIMAGE_FLAGS_ILONLY` - Contains only IL code.
     pub const FLAG_ILONLY: u32 = 0x0000_0001;
-    /// COMIMAGE_FLAGS_32BITREQUIRED - Requires 32-bit platform.
+    /// `COMIMAGE_FLAGS_32BITREQUIRED` - Requires 32-bit platform.
     pub const FLAG_32BITREQUIRED: u32 = 0x0000_0002;
-    /// COMIMAGE_FLAGS_IL_LIBRARY - IL library (not executable).
+    /// `COMIMAGE_FLAGS_IL_LIBRARY` - IL library (not executable).
     pub const FLAG_IL_LIBRARY: u32 = 0x0000_0004;
-    /// COMIMAGE_FLAGS_STRONGNAMESIGNED - Strong-name signed.
+    /// `COMIMAGE_FLAGS_STRONGNAMESIGNED` - Strong-name signed.
     pub const FLAG_STRONGNAMESIGNED: u32 = 0x0000_0008;
-    /// COMIMAGE_FLAGS_NATIVE_ENTRYPOINT - Entry point is native RVA (not token).
+    /// `COMIMAGE_FLAGS_NATIVE_ENTRYPOINT` - Entry point is native RVA (not token).
     pub const FLAG_NATIVE_ENTRYPOINT: u32 = 0x0000_0010;
-    /// COMIMAGE_FLAGS_TRACKDEBUGDATA - Track debug data.
+    /// `COMIMAGE_FLAGS_TRACKDEBUGDATA` - Track debug data.
     pub const FLAG_TRACKDEBUGDATA: u32 = 0x0001_0000;
-    /// COMIMAGE_FLAGS_32BITPREFERRED - Prefers 32-bit platform.
+    /// `COMIMAGE_FLAGS_32BITPREFERRED` - Prefers 32-bit platform.
     pub const FLAG_32BITPREFERRED: u32 = 0x0002_0000;
 
     /// Parse CLI header from a byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::BufferTooSmall`](crate::error::ErrorKind::BufferTooSmall)
+    /// if `data` is shorter than 72 bytes, and
+    /// [`ErrorKind::InvalidDataDirectory`](crate::error::ErrorKind::InvalidDataDirectory)
+    /// if the declared `cb` is smaller than 72.
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < Self::SIZE {
             return Err(Error::buffer_too_small(Self::SIZE, data.len()));
@@ -111,7 +120,7 @@ impl CliHeader {
             |offset: usize| -> u16 { u16::from_le_bytes([data[offset], data[offset + 1]]) };
 
         let cb = read_u32(0);
-        if cb < Self::SIZE as u32 {
+        if cb < Self::SIZE_U32 {
             return Err(Error::invalid_data_directory(format!(
                 "CLR header declares size {}, expected at least {}",
                 cb,
@@ -143,32 +152,38 @@ impl CliHeader {
     }
 
     /// Check if the assembly contains only IL code.
+    #[must_use]
     pub fn is_il_only(&self) -> bool {
         self.flags & Self::FLAG_ILONLY != 0
     }
 
     /// Check if the assembly requires 32-bit platform.
+    #[must_use]
     pub fn is_32bit_required(&self) -> bool {
         self.flags & Self::FLAG_32BITREQUIRED != 0
     }
 
     /// Check if the assembly prefers 32-bit platform.
+    #[must_use]
     pub fn is_32bit_preferred(&self) -> bool {
         self.flags & Self::FLAG_32BITPREFERRED != 0
     }
 
     /// Check if the assembly is strong-name signed.
+    #[must_use]
     pub fn is_strong_name_signed(&self) -> bool {
         self.flags & Self::FLAG_STRONGNAMESIGNED != 0
     }
 
     /// Check if the entry point is a native RVA (vs metadata token).
+    #[must_use]
     pub fn has_native_entry_point(&self) -> bool {
         self.flags & Self::FLAG_NATIVE_ENTRYPOINT != 0
     }
 
     /// Serialize the CLI header to a 72-byte array.
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut data = [0u8; Self::SIZE];
 
         data[0..4].copy_from_slice(&self.cb.to_le_bytes());
@@ -198,7 +213,7 @@ impl CliHeader {
 impl Default for CliHeader {
     fn default() -> Self {
         Self {
-            cb: Self::SIZE as u32,
+            cb: Self::SIZE_U32,
             major_runtime_version: 2,
             minor_runtime_version: 5,
             metadata_rva: 0,
@@ -247,6 +262,7 @@ pub struct CliBuilder {
 
 impl CliBuilder {
     /// Create a new CLI builder with default values.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             header: CliHeader::default(),
@@ -254,6 +270,7 @@ impl CliBuilder {
     }
 
     /// Create from an existing CLI header.
+    #[must_use]
     pub fn from_header(header: CliHeader) -> Self {
         Self { header }
     }
@@ -265,7 +282,7 @@ impl CliBuilder {
         self
     }
 
-    /// Set the entry point token (MethodDef or File token).
+    /// Set the entry point token (`MethodDef` or `File` token).
     pub fn entry_point_token(&mut self, token: u32) -> &mut Self {
         self.header.entry_point_token_or_rva = token;
         self.header.flags &= !CliHeader::FLAG_NATIVE_ENTRYPOINT;
@@ -323,7 +340,7 @@ impl CliBuilder {
         self
     }
 
-    /// Set the VTable fixups RVA and size.
+    /// Set the `VTable` fixups RVA and size.
     pub fn vtable_fixups(&mut self, rva: u32, size: u32) -> &mut Self {
         self.header.vtable_fixups_rva = rva;
         self.header.vtable_fixups_size = size;
@@ -338,12 +355,14 @@ impl CliBuilder {
 
     /// Build the CLI header.
     /// Returns (data, size).
+    #[must_use]
     pub fn build(&self) -> (Vec<u8>, u32) {
         let data = self.header.to_bytes().to_vec();
-        (data, CliHeader::SIZE as u32)
+        (data, CliHeader::SIZE_U32)
     }
 
     /// Get the built header.
+    #[must_use]
     pub fn into_header(self) -> CliHeader {
         self.header
     }
@@ -413,7 +432,7 @@ mod tests {
             .resources(0x3000, 0x100);
 
         let (data, size) = builder.build();
-        assert_eq!(size, CliHeader::SIZE as u32);
+        assert_eq!(size, CliHeader::SIZE_U32);
         assert_eq!(data.len(), CliHeader::SIZE);
 
         let header = CliHeader::parse(&data).unwrap();

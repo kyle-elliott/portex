@@ -21,10 +21,30 @@ std = ["nostdio/std"]
 nostdio = { version = "0.2", default-features = false }
 
 [lints.rust]
-warnings = "deny"
+warnings = { level = "deny", priority = -2 }
+unused = { level = "deny", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+missing_docs = "deny"
+# Denied everywhere. The exception is `BaseAddressReader` in `src/reader.rs`,
+# which copies from caller-provided memory; each unsafe item is marked with
+# `#[expect(unsafe_code)]` and documented with its invariant.
+unsafe_code = "deny"
 
 [lints.clippy]
-all = "deny"
+allow_attributes = { level = "deny", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+# Modules live in `foo.rs` with their children in `foo/`, never in
+# `foo/mod.rs` (the Rust Reference's recommended layout); integration test
+# crates with several files use `tests/<name>/main.rs`.
+mod_module_files = "deny"
 
 [lints.rustdoc]
-all = "deny"
+all = { level = "warn", priority = -1 }

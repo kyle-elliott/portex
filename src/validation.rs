@@ -89,7 +89,7 @@ pub enum ValidationCode {
 
 impl fmt::Display for ValidationCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -128,17 +128,20 @@ impl ValidationIssue {
     }
 
     /// Add context to this issue.
+    #[must_use]
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
         self
     }
 
     /// Check if this is an error.
+    #[must_use]
     pub fn is_error(&self) -> bool {
         self.level == ValidationLevel::Error
     }
 
     /// Check if this is a warning.
+    #[must_use]
     pub fn is_warning(&self) -> bool {
         self.level == ValidationLevel::Warning
     }
@@ -148,7 +151,7 @@ impl fmt::Display for ValidationIssue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{}] {}: {}", self.level, self.code, self.message)?;
         if let Some(ctx) = &self.context {
-            write!(f, " ({})", ctx)?;
+            write!(f, " ({ctx})")?;
         }
         Ok(())
     }
@@ -163,6 +166,7 @@ pub struct ValidationResult {
 
 impl ValidationResult {
     /// Create an empty result.
+    #[must_use]
     pub fn new() -> Self {
         Self { issues: Vec::new() }
     }
@@ -173,16 +177,19 @@ impl ValidationResult {
     }
 
     /// Check if there are any errors.
+    #[must_use]
     pub fn has_errors(&self) -> bool {
-        self.issues.iter().any(|i| i.is_error())
+        self.issues.iter().any(ValidationIssue::is_error)
     }
 
     /// Check if there are any warnings.
+    #[must_use]
     pub fn has_warnings(&self) -> bool {
-        self.issues.iter().any(|i| i.is_warning())
+        self.issues.iter().any(ValidationIssue::is_warning)
     }
 
     /// Check if there are no issues.
+    #[must_use]
     pub fn is_ok(&self) -> bool {
         self.issues.is_empty()
     }
@@ -197,22 +204,31 @@ impl ValidationResult {
         self.issues.iter().filter(|i| i.is_warning())
     }
 
+    /// Iterate over all issues.
+    pub fn iter(&self) -> core::slice::Iter<'_, ValidationIssue> {
+        self.issues.iter()
+    }
+
     /// Number of issues.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.issues.len()
     }
 
     /// Check if empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.issues.is_empty()
     }
 
     /// Count of errors.
+    #[must_use]
     pub fn error_count(&self) -> usize {
         self.issues.iter().filter(|i| i.is_error()).count()
     }
 
     /// Count of warnings.
+    #[must_use]
     pub fn warning_count(&self) -> usize {
         self.issues.iter().filter(|i| i.is_warning()).count()
     }
