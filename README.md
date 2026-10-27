@@ -4,7 +4,7 @@ Portex is a `no_std`-friendly parser, editor, and builder for PE executable
 images. It deliberately distinguishes byte-for-byte files from images already
 mapped by a loader, because their RVA-to-source translations are different.
 
-[![CI](https://github.com/coconutbird/portex/actions/workflows/ci.yml/badge.svg)](https://github.com/coconutbird/portex/actions/workflows/ci.yml)
+[![CI](https://github.com/napbat/portex/actions/workflows/ci.yml/badge.svg)](https://github.com/napbat/portex/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## What it supports
