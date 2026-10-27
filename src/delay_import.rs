@@ -21,7 +21,9 @@
 //! # Ok::<(), portex::Error>(())
 //! ```
 
-use crate::import::Cursor;
+use nostdio::{Cursor, Seek, Write, WriteLe};
+
+use crate::import::{skip_to_even, split_parts};
 use crate::prelude::*;
 use crate::{Error, Result};
 
@@ -655,36 +657,54 @@ impl DelayImportBuilder {
     /// Serialize `dlls` into a new buffer with the parts at the offsets in
     /// `layout`.
     fn write_table(&self, dlls: &[DelayLoadedDll], layout: &DelayImportLayout) -> Result<Vec<u8>> {
-        let thunk_size = self.thunk_size();
+        let thunk_skip = self.thunk_skip();
         let mut data = vec![0u8; layout.total_size];
 
         // The parts are in this order: descriptors, IAT, INT, module handles,
         // hint/name entries, DLL names. The IAT starts after the descriptors.
-        let mut desc = Cursor::new(0);
-        let mut iat = Cursor::new(layout.descriptors_size);
-        let mut name_table = Cursor::new(layout.name_table_offset);
-        let mut handle = Cursor::new(layout.handles_offset);
-        let mut hint_name = Cursor::new(layout.hint_names_offset);
-        let mut dll_name = Cursor::new(layout.dll_names_offset);
+        let starts = [
+            0,
+            layout.descriptors_size,
+            layout.name_table_offset,
+            layout.handles_offset,
+            layout.hint_names_offset,
+            layout.dll_names_offset,
+        ];
+        let [
+            _,
+            iat_start,
+            name_table_start,
+            handle_start,
+            hint_name_start,
+            dll_name_start,
+        ] = starts;
+        let [
+            mut desc,
+            mut iat,
+            mut name_table,
+            mut handle,
+            mut hint_name,
+            mut dll_name,
+        ] = split_parts(&mut data, starts)?;
 
         for dll in dlls {
             // Write the descriptor. Attributes value 1 means that the fields are RVAs
             // (the modern format).
             let descriptor = DelayLoadDescriptor {
                 attributes: 1,
-                dll_name_rva: self.rva_at(dll_name.offset())?,
-                module_handle_rva: self.rva_at(handle.offset())?,
-                import_address_table_rva: self.rva_at(iat.offset())?,
-                import_name_table_rva: self.rva_at(name_table.offset())?,
+                dll_name_rva: self.rva_at(dll_name_start, dll_name.position())?,
+                module_handle_rva: self.rva_at(handle_start, handle.position())?,
+                import_address_table_rva: self.rva_at(iat_start, iat.position())?,
+                import_name_table_rva: self.rva_at(name_table_start, name_table.position())?,
                 bound_import_address_table_rva: 0,
                 unload_information_table_rva: 0,
                 time_date_stamp: 0,
             };
-            desc.put(&mut data, &descriptor.to_array())?;
+            desc.write_all(&descriptor.to_array())?;
 
             // Write the DLL name. The zeroed buffer supplies the null terminator.
-            dll_name.put(&mut data, dll.name.as_bytes())?;
-            dll_name.skip(1)?;
+            dll_name.write_all(dll.name.as_bytes())?;
+            dll_name.seek_relative(1)?;
 
             // Write the IAT entries, the INT entries and the hint/name entries.
             for import in &dll.imports {
@@ -692,24 +712,24 @@ impl DelayImportBuilder {
                     DelayImportThunk::Ordinal(ord) => (true, u32::from(*ord)),
                     DelayImportThunk::Name { hint, name } => {
                         // Write the hint/name entry: hint, name, null terminator,
-                        // and padding to an even offset.
-                        let hint_name_rva = self.rva_at(hint_name.offset())?;
-                        hint_name.put(&mut data, &hint.to_le_bytes())?;
-                        hint_name.put(&mut data, name.as_bytes())?;
-                        hint_name.skip(1)?;
-                        hint_name.align_even()?;
+                        // and padding to an even offset in the part.
+                        let hint_name_rva = self.rva_at(hint_name_start, hint_name.position())?;
+                        hint_name.write_u16_le(*hint)?;
+                        hint_name.write_all(name.as_bytes())?;
+                        hint_name.seek_relative(1)?;
+                        skip_to_even(&mut hint_name)?;
 
                         (false, hint_name_rva)
                     }
                 };
-                self.write_thunk(&mut iat, &mut data, by_ordinal, thunk_value)?;
-                self.write_thunk(&mut name_table, &mut data, by_ordinal, thunk_value)?;
+                self.write_thunk(&mut iat, by_ordinal, thunk_value)?;
+                self.write_thunk(&mut name_table, by_ordinal, thunk_value)?;
             }
 
             // Skip the null terminators of the IAT and the INT, and the zeroed module handle.
-            iat.skip(thunk_size)?;
-            name_table.skip(thunk_size)?;
-            handle.skip(thunk_size)?;
+            iat.seek_relative(thunk_skip)?;
+            name_table.seek_relative(thunk_skip)?;
+            handle.seek_relative(thunk_skip)?;
         }
 
         // The null terminator descriptor is already zero.
@@ -722,10 +742,18 @@ impl DelayImportBuilder {
         if self.is_64bit { 8 } else { 4 }
     }
 
-    /// Return the RVA of byte `offset` in the built delay import data.
-    fn rva_at(&self, offset: usize) -> Result<u32> {
-        u32::try_from(offset)
+    /// Return the size of one thunk or module handle as a cursor offset.
+    fn thunk_skip(&self) -> i64 {
+        if self.is_64bit { 8 } else { 4 }
+    }
+
+    /// Return the RVA of byte `position` in the part that starts at byte `start` of the built
+    /// delay import data.
+    fn rva_at(&self, start: usize, position: u64) -> Result<u32> {
+        u32::try_from(start)
             .ok()
+            .zip(u32::try_from(position).ok())
+            .and_then(|(start, position)| start.checked_add(position))
             .and_then(|offset| self.base_rva.checked_add(offset))
             .ok_or_else(|| Error::invalid_data_directory("delay-import RVA overflow"))
     }
@@ -734,18 +762,18 @@ impl DelayImportBuilder {
     /// set) or a hint/name RVA, sized for PE32 or PE32+.
     fn write_thunk(
         &self,
-        cursor: &mut Cursor,
-        data: &mut [u8],
+        cursor: &mut Cursor<&mut [u8]>,
         by_ordinal: bool,
         value: u32,
     ) -> Result<()> {
         if self.is_64bit {
             let flag = if by_ordinal { IMAGE_ORDINAL_FLAG64 } else { 0 };
-            cursor.put(data, &(flag | u64::from(value)).to_le_bytes())
+            cursor.write_u64_le(flag | u64::from(value))?;
         } else {
             let flag = if by_ordinal { IMAGE_ORDINAL_FLAG32 } else { 0 };
-            cursor.put(data, &(flag | value).to_le_bytes())
+            cursor.write_u32_le(flag | value)?;
         }
+        Ok(())
     }
 }
 

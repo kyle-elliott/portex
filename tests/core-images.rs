@@ -555,6 +555,16 @@ fn nostdio_cursor_and_positional_adapter_round_trip() {
     assert_eq!(parsed.entry_point(), 0x1000);
 }
 
+#[test]
+fn stream_errors_keep_the_nostdio_error() {
+    let raw = test_image().try_build().unwrap();
+    let file = PeFile::parse(&raw).unwrap();
+    let mut small = [0u8; 16];
+    let error = file.write_to(&mut Cursor::new(&mut small[..])).unwrap_err();
+    assert!(matches!(error.kind, portex::ErrorKind::Io(_)));
+    assert!(core::error::Error::source(&error).is_some());
+}
+
 struct OverReportingReader;
 
 impl ReadAt for OverReportingReader {

@@ -8,8 +8,6 @@ use crate::{Error, Result};
 #[cfg(feature = "std")]
 use std::fs::File;
 #[cfg(feature = "std")]
-use std::io::Write;
-#[cfg(feature = "std")]
 use std::path::Path;
 
 impl PeImage {
@@ -340,10 +338,7 @@ impl PeImage {
     /// fails.
     #[cfg(feature = "std")]
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let bytes = self.try_build()?;
-        let mut file = File::create(path)?;
-        file.write_all(&bytes)?;
-        Ok(())
+        self.write_to(&mut File::create(path)?)
     }
 
     /// Serialize this normalized image to a `nostdio` stream.
@@ -352,9 +347,8 @@ impl PeImage {
     ///
     /// Returns an error if [`Self::try_build`] fails or the stream write fails.
     pub fn write_to<W: nostdio::Write>(&self, stream: &mut W) -> Result<()> {
-        stream
-            .write_all(&self.try_build()?)
-            .map_err(crate::reader::map_nostdio_error)
+        stream.write_all(&self.try_build()?)?;
+        Ok(())
     }
 }
 

@@ -23,9 +23,6 @@
 use crate::prelude::*;
 use core::fmt;
 
-#[cfg(feature = "std")]
-use std::io;
-
 /// Result type alias for portex operations.
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -130,9 +127,8 @@ pub struct Error {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ErrorKind {
-    /// I/O error from a read or write operation.
-    #[cfg(feature = "std")]
-    Io(io::Error),
+    /// I/O error from a `nostdio` stream. With the `std` feature, this is `std::io::Error`.
+    Io(nostdio::IoError),
     /// Invalid DOS signature (expected "MZ").
     InvalidDosSignature,
     /// Invalid PE signature (expected "PE\0\0").
@@ -289,7 +285,6 @@ impl Error {
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            #[cfg(feature = "std")]
             ErrorKind::Io(e) => write!(f, "I/O error: {e}"),
             ErrorKind::InvalidDosSignature => write!(f, "Invalid DOS signature (expected 'MZ')"),
             ErrorKind::InvalidPeSignature => {
@@ -329,9 +324,8 @@ impl fmt::Display for Error {
     }
 }
 
-#[cfg(feature = "std")]
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match &self.kind {
             ErrorKind::Io(e) => Some(e),
             _ => None,
@@ -339,9 +333,8 @@ impl std::error::Error for Error {
     }
 }
 
-#[cfg(feature = "std")]
-impl From<io::Error> for Error {
-    fn from(e: io::Error) -> Self {
+impl From<nostdio::IoError> for Error {
+    fn from(e: nostdio::IoError) -> Self {
         Self::new(ErrorKind::Io(e))
     }
 }

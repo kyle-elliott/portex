@@ -313,9 +313,7 @@ impl PeImage {
     /// listed on [`Self::read_from_with_options`].
     pub fn from_stream<R: nostdio::Read>(stream: &mut R) -> Result<Self> {
         let mut data = Vec::new();
-        stream
-            .read_to_end(&mut data)
-            .map_err(crate::reader::map_nostdio_error)?;
+        stream.read_to_end(&mut data)?;
         Self::parse(&data)
     }
 }

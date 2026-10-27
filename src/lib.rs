@@ -21,7 +21,10 @@
 //!   - `PeImage::from_file`, `PeImage::write_to_file`, `PeFile::from_file`,
 //!     `PeFile::write_to_file` and `PeHeaders::from_file`.
 //!   - `FileReader` and `SeekReader::open`.
-//!   - The `std::error::Error` and `From<io::Error>` impls.
+//! - **Stream I/O**: `nostdio` supplies the `Read`, `Write` and `Seek` traits and the
+//!   `nostdio::IoError` type. With the `std` feature, these are the `std::io` items. An
+//!   [`ErrorKind::Io`] error holds a `nostdio::IoError` in every build, and [`Error`]
+//!   implements `core::error::Error`.
 //!
 //! ## Architecture
 //!

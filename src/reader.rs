@@ -168,11 +168,9 @@ impl<R: nostdio::Seek> SeekReader<R> {
     ///
     /// Returns an I/O error if the query of the stream position fails or if a seek fails.
     pub fn with_discovered_size(mut inner: R) -> Result<Self> {
-        let original = inner.stream_position().map_err(map_nostdio_error)?;
-        let size = inner.seek(SeekFrom::End(0)).map_err(map_nostdio_error)?;
-        inner
-            .seek(SeekFrom::Start(original))
-            .map_err(map_nostdio_error)?;
+        let original = inner.stream_position()?;
+        let size = inner.seek(SeekFrom::End(0))?;
+        inner.seek(SeekFrom::Start(original))?;
         Ok(Self::new(inner, Some(size)))
     }
 }
@@ -183,10 +181,14 @@ impl<R: nostdio::Read + nostdio::Seek> ReadAt for SeekReader<R> {
             .inner
             .try_borrow_mut()
             .map_err(|_| Error::generic("seekable reader is already borrowed"))?;
-        inner
-            .seek(SeekFrom::Start(offset))
-            .map_err(map_nostdio_error)?;
-        inner.read(buf).map_err(map_nostdio_error)
+        inner.seek(SeekFrom::Start(offset))?;
+        // Retry an interrupted read, as the `std::io::Read` contract requires.
+        loop {
+            match inner.read(buf) {
+                Err(error) if nostdio::is_interrupted(&error) => {}
+                result => return Ok(result?),
+            }
+        }
     }
 
     fn size(&self) -> Option<u64> {
@@ -200,17 +202,6 @@ impl<R> core::fmt::Debug for SeekReader<R> {
             .debug_struct("SeekReader")
             .field("size", &self.size)
             .finish_non_exhaustive()
-    }
-}
-
-pub(crate) fn map_nostdio_error(error: nostdio::IoError) -> Error {
-    #[cfg(feature = "std")]
-    {
-        Error::from(error)
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        Error::generic(error.to_string())
     }
 }
 
@@ -477,5 +468,37 @@ mod tests {
         assert!(reader.read_exact_at(end - 1, &mut buf).is_err());
         let past_isize = u64::try_from(isize::MAX.unsigned_abs()).unwrap();
         assert!(reader.read_at(past_isize, &mut buf).is_err());
+    }
+
+    /// Stream that fails its first read with an interrupted error, as a signal can.
+    struct InterruptedOnce {
+        inner: nostdio::Cursor<Vec<u8>>,
+        interrupted: bool,
+    }
+
+    impl nostdio::Read for InterruptedOnce {
+        fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, nostdio::IoError> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(nostdio::interrupted());
+            }
+            self.inner.read(buf)
+        }
+    }
+
+    impl nostdio::Seek for InterruptedOnce {
+        fn seek(&mut self, position: SeekFrom) -> core::result::Result<u64, nostdio::IoError> {
+            self.inner.seek(position)
+        }
+    }
+
+    #[test]
+    fn test_seek_reader_retries_interrupted_read() {
+        let stream = InterruptedOnce {
+            inner: nostdio::Cursor::new(vec![0x4D, 0x5A]),
+            interrupted: false,
+        };
+        let reader = SeekReader::with_discovered_size(stream).unwrap();
+        assert_eq!(reader.read_u16_at(0).unwrap(), 0x5A4D);
     }
 }

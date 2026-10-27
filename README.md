@@ -51,14 +51,13 @@ portex = { version = "0.3", default-features = false }
 
 Portex 0.3 requires Rust 1.88 or newer.
 
-The default `std` feature adds:
-
-- filesystem helpers and `FileReader`
-- conversion from standard I/O errors
-- the standard-library integration of `nostdio`
+The default `std` feature adds filesystem helpers and `FileReader`. It also enables the `std`
+feature of `nostdio`. Then the `nostdio` traits and `nostdio::IoError` are the `std::io` items,
+so `std` files and streams work with the stream APIs directly.
 
 Without `std`, parsing, building, mapped images, validation, in-memory readers and stream APIs
-are still available.
+are still available. `nostdio` then supplies its own traits and error type. An I/O error is an
+`ErrorKind::Io` in both builds.
 
 ## Core types
 
@@ -139,7 +138,8 @@ sections.
 
 ## Sequential and positional I/O
 
-`nostdio` supplies the `Read`, `Write` and `Seek` traits, which use a cursor:
+`nostdio` supplies the `Read`, `Write` and `Seek` traits and the `Cursor` type. `portex::io`
+re-exports them:
 
 ```rust,no_run
 use portex::PeFile;
