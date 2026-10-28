@@ -318,8 +318,10 @@ impl PeImage {
         let serialized_optional_size = actual_optional_size.max(declared_optional_size);
         let serialized_optional_size_u16 = u16::try_from(serialized_optional_size)
             .map_err(|_| Error::invalid_section("optional header exceeds u16"))?;
+        // Keep the header tail at its offset: data directories refer to it by RVA.
         let headers_size =
             layout::headers_size_at(pe_offset, self.sections.len(), serialized_optional_size)
+                .and_then(|table_end| self.header_data_end(table_end))
                 .and_then(|size| u32::try_from(size).ok())
                 .ok_or_else(|| Error::invalid_section("header table exceeds u32"))?;
         let size_of_headers = layout::checked_align_up(headers_size, config.file_alignment)
@@ -330,7 +332,8 @@ impl PeImage {
         layout::try_layout_sections(&mut sections, &config, headers_size)?;
 
         // Update `SizeOfImage`.
-        let size_of_image = layout::try_calculate_size_of_image(&sections, &config)?;
+        let size_of_image =
+            layout::try_calculate_size_of_image_with_headers(&sections, &config, size_of_headers)?;
         let aggregates = calculate_optional_layout_fields(&sections)?;
         let section_count = u16::try_from(sections.len())
             .map_err(|_| Error::invalid_section("section count exceeds u16"))?;

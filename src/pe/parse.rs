@@ -1,8 +1,9 @@
-use super::{MissingSectionData, ParseOptions, PeHeaders, PeImage, SourceLayout};
+use super::{HeaderTail, MissingSectionData, ParseOptions, PeHeaders, PeImage, SourceLayout};
+use crate::coff::CoffHeader;
 use crate::dos::DosHeader;
 use crate::prelude::*;
 use crate::reader::{ReadAt, SliceReader};
-use crate::section::Section;
+use crate::section::{Section, SectionHeader};
 use crate::{Error, Result};
 
 #[cfg(feature = "std")]
@@ -162,6 +163,7 @@ impl PeImage {
         options: ParseOptions,
     ) -> Result<Self> {
         let headers = PeHeaders::read_from(reader, base_offset)?;
+        let header_tail = Self::read_header_tail(reader, base_offset, &headers, options.layout);
 
         // Read the DOS stub.
         let dos_stub_start = base_offset
@@ -233,7 +235,77 @@ impl PeImage {
             sections,
             source_layout: options.layout,
             runtime_image_base: options.runtime_image_base,
+            header_tail,
         })
+    }
+
+    /// Read the raw header bytes after the section table.
+    ///
+    /// The bytes end at `SizeOfHeaders`, at the first section and at the end of the source. The
+    /// result is empty if the bytes are all zero or cannot be read. The tail is optional data, so
+    /// a read failure does not make the parse fail.
+    fn read_header_tail<R: ReadAt>(
+        reader: &R,
+        base_offset: u64,
+        headers: &PeHeaders,
+        layout: SourceLayout,
+    ) -> HeaderTail {
+        // The NT headers are the PE signature, the COFF header, the optional header and the
+        // section table.
+        let nt_headers_size = (headers.section_headers.len() as u64)
+            .checked_mul(SectionHeader::SIZE as u64)
+            .and_then(|table_size| {
+                table_size.checked_add(
+                    4 + CoffHeader::SIZE as u64
+                        + u64::from(headers.coff_header.size_of_optional_header),
+                )
+            });
+        let Some(table_end) = headers
+            .pe_offset
+            .checked_sub(base_offset)
+            .zip(nt_headers_size)
+            .and_then(|(pe_offset, size)| pe_offset.checked_add(size))
+        else {
+            return HeaderTail::default();
+        };
+
+        let mut limit = u64::from(headers.optional_header.size_of_headers());
+        for header in &headers.section_headers {
+            let start = match layout {
+                SourceLayout::File => (header.pointer_to_raw_data != 0
+                    && header.size_of_raw_data != 0)
+                    .then_some(header.pointer_to_raw_data),
+                SourceLayout::Mapped => (header.virtual_size.max(header.size_of_raw_data) != 0)
+                    .then_some(header.virtual_address),
+            };
+            if let Some(start) = start {
+                limit = limit.min(u64::from(start));
+            }
+        }
+        if let Some(source_size) = reader.size() {
+            limit = limit.min(source_size.saturating_sub(base_offset));
+        }
+
+        let len = limit
+            .checked_sub(table_end)
+            .filter(|len| *len != 0)
+            .and_then(|len| usize::try_from(len).ok());
+        let (Some(len), Ok(offset), Some(source_offset)) = (
+            len,
+            usize::try_from(table_end),
+            base_offset.checked_add(table_end),
+        ) else {
+            return HeaderTail::default();
+        };
+        let mut bytes =
+            Self::read_source_bytes(reader, source_offset, len, MissingSectionData::Empty)
+                .unwrap_or_default();
+        let used = bytes
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |last| last + 1);
+        bytes.truncate(used);
+        HeaderTail { offset, bytes }
     }
 
     /// Read a source range and apply the selected [`MissingSectionData`] policy.

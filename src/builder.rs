@@ -228,6 +228,7 @@ impl PeBuilder {
             sections,
             source_layout: crate::pe::SourceLayout::File,
             runtime_image_base: None,
+            header_tail: crate::pe::HeaderTail::default(),
         };
 
         pe.try_update_layout()?;

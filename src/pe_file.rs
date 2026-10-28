@@ -13,6 +13,9 @@ use std::fs::File;
 #[cfg(feature = "std")]
 use std::path::Path;
 
+/// The error message for a raw layout that cannot hold the headers and the section data.
+const UNHELD_LAYOUT: &str = "current raw layout cannot hold the edited section data";
+
 /// A raw PE file together with the bytes outside the mapped image.
 ///
 /// [`PeImage`] owns the normalized headers and sections. Thus it can hold raw-file input or
@@ -390,13 +393,18 @@ impl PeFile {
         } else {
             pe.clear_security();
         }
-        let preserve_layout = RawLayoutFingerprint::from_image(&pe)? == self.source_layout
-            && pe.current_layout_can_hold_data()?;
-        let first_pass = if preserve_layout {
+        let preserved_pass = if RawLayoutFingerprint::from_image(&pe)? == self.source_layout {
             pe.try_build_current_layout()?
+        } else {
+            None
+        };
+        let preserve_layout = preserved_pass.is_some();
+        let first_pass = if let Some(bytes) = preserved_pass {
+            bytes
         } else {
             pe.try_update_layout()?;
             pe.try_build_current_layout()?
+                .ok_or_else(|| Error::invalid_section(UNHELD_LAYOUT))?
         };
         let base_size = first_pass.len();
 
@@ -434,6 +442,7 @@ impl PeFile {
 
         let mut output = if preserve_layout {
             pe.try_build_current_layout()?
+                .ok_or_else(|| Error::invalid_section(UNHELD_LAYOUT))?
         } else {
             pe.try_build()?
         };
@@ -509,7 +518,7 @@ impl DerefMut for PeFile {
 }
 
 fn raw_image_end(pe: &PeImage) -> Result<usize> {
-    let mut image_end = pe.optional_header.size_of_headers() as usize;
+    let mut image_end = (pe.optional_header.size_of_headers() as usize).max(section_table_end(pe)?);
     for section in &pe.sections {
         let header = &section.header;
         if header.pointer_to_raw_data == 0 || header.size_of_raw_data == 0 {
@@ -521,6 +530,26 @@ fn raw_image_end(pe: &PeImage) -> Result<usize> {
         image_end = image_end.max(end);
     }
     Ok(image_end)
+}
+
+/// Return the file offset of the end of the section table.
+///
+/// The loader reads the complete section table, also if it ends after `SizeOfHeaders`.
+fn section_table_end(image: &PeImage) -> Result<usize> {
+    let pe_offset = usize::try_from(image.dos_header.e_lfanew)
+        .map_err(|_| Error::invalid_section("e_lfanew is negative"))?;
+    image
+        .sections
+        .len()
+        .checked_mul(crate::SectionHeader::SIZE)
+        .and_then(|table_size| {
+            table_size.checked_add(
+                4 + crate::CoffHeader::SIZE
+                    + usize::from(image.coff_header.size_of_optional_header),
+            )
+        })
+        .and_then(|size| pe_offset.checked_add(size))
+        .ok_or_else(|| Error::invalid_section("section-table offset overflow"))
 }
 
 impl RawLayoutFingerprint {
@@ -561,15 +590,7 @@ fn collect_preserved_regions(
     let declared_optional_end = optional_start
         .checked_add(usize::from(image.coff_header.size_of_optional_header))
         .ok_or_else(|| Error::invalid_section("optional-header size overflow"))?;
-    let section_table_end = declared_optional_end
-        .checked_add(
-            image
-                .sections
-                .len()
-                .checked_mul(crate::SectionHeader::SIZE)
-                .ok_or_else(|| Error::invalid_section("section-table size overflow"))?,
-        )
-        .ok_or_else(|| Error::invalid_section("section-table offset overflow"))?;
+    let section_table_end = section_table_end(image)?;
 
     let mut regions = Vec::new();
     push_preserved_region(

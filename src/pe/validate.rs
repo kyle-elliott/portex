@@ -220,6 +220,7 @@ impl PeImage {
                 .and_then(|pe_offset| {
                     layout::headers_size_at(pe_offset, self.sections.len(), declared_optional_size)
                 })
+                .and_then(|table_end| self.header_data_end(table_end))
                 .and_then(|size| u32::try_from(size).ok())
                 .and_then(|size| layout::checked_align_up(size, file_align));
             if let Some(expected) = expected_headers
@@ -237,11 +238,15 @@ impl PeImage {
         }
     }
 
-    /// Check `SizeOfImage` against the section layout.
+    /// Check `SizeOfImage` against the header size and the section layout.
     fn validate_image_size(&self, result: &mut ValidationResult, section_align: u32) {
         if section_align != 0 && section_align.is_power_of_two() {
             let config = LayoutConfig::from_optional_header(&self.optional_header);
-            match layout::try_calculate_size_of_image(&self.sections, &config) {
+            match layout::try_calculate_size_of_image_with_headers(
+                &self.sections,
+                &config,
+                self.optional_header.size_of_headers(),
+            ) {
                 Ok(expected) if expected != self.optional_header.size_of_image() => {
                     result.push(ValidationIssue::error(
                         ValidationCode::InconsistentImageSize,
@@ -575,14 +580,24 @@ impl PeImage {
             OptionalHeader::Pe32(h) => h.check_sum,
             OptionalHeader::Pe32Plus(h) => h.check_sum,
         };
-        if stored_checksum != 0 {
-            let computed = self.calculate_checksum();
-            if stored_checksum != computed {
+        if stored_checksum == 0 {
+            return;
+        }
+        // The checksum covers the serialized image. Malformed file data can stop the build.
+        match self.try_calculate_checksum() {
+            Ok(computed) if computed != stored_checksum => {
                 result.push(ValidationIssue::warning(
                     ValidationCode::InvalidChecksum,
                     format!(
                         "Checksum mismatch: stored {stored_checksum:#x}, computed {computed:#x}"
                     ),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                result.push(ValidationIssue::warning(
+                    ValidationCode::InvalidChecksum,
+                    format!("Checksum {stored_checksum:#x} cannot be verified: {error}"),
                 ));
             }
         }

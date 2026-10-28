@@ -1,4 +1,4 @@
-use super::PeImage;
+use super::{HeaderTail, PeImage};
 use crate::coff::{CoffHeader, PE_SIGNATURE};
 use crate::dos::DosHeader;
 use crate::prelude::*;
@@ -42,53 +42,80 @@ impl PeImage {
         let mut pe = self.clone();
         pe.try_update_layout()?;
         pe.synchronize_file_offsets()?;
-        pe.try_write_bytes()
+        let headers = pe.build_headers()?;
+        pe.try_write_bytes(&headers)
     }
 
     /// Serialize the image with the current raw file offsets, and do not recompute the layout.
     ///
     /// [`crate::PeFile`] uses this method to keep intentional file gaps when the parsed layout
-    /// does not change otherwise.
-    pub(crate) fn try_build_current_layout(&self) -> Result<Vec<u8>> {
-        if !self.current_layout_can_hold_data()? {
-            return Err(Error::invalid_section(
-                "current raw layout cannot hold the edited section data",
-            ));
+    /// does not change otherwise. Returns `None` if the current raw layout cannot hold the
+    /// headers and the section data.
+    pub(crate) fn try_build_current_layout(&self) -> Result<Option<Vec<u8>>> {
+        if !self.current_layout_can_hold() {
+            return Ok(None);
         }
         let mut pe = self.clone();
         pe.synchronize_file_offsets()?;
-        pe.try_write_bytes()
+        let Ok(headers) = pe.build_headers() else {
+            return Ok(None);
+        };
+        let output = pe.try_write_bytes(&headers)?;
+        Ok(pe.output_holds_data(&output, &headers).then_some(output))
     }
 
-    pub(crate) fn current_layout_can_hold_data(&self) -> Result<bool> {
-        let Ok(headers) = self.build_headers() else {
-            return Ok(false);
-        };
-        let header_limit = self.optional_header.size_of_headers() as usize;
-        if headers.len() > header_limit {
-            return Ok(false);
-        }
+    /// Check the sizes of the current raw layout against the section data.
+    ///
+    /// File ranges can overlap here, and the header table can extend past `SizeOfHeaders`.
+    /// [`Self::output_holds_data`] checks the overlapping bytes.
+    fn current_layout_can_hold(&self) -> bool {
+        self.sections.iter().all(|section| {
+            let start = section.header.pointer_to_raw_data;
+            let size = section.header.size_of_raw_data as usize;
+            if size == 0 {
+                return section.data.is_empty() || section.preserved_raw_size() == Some(0);
+            }
+            start != 0 && section.data.len() <= size
+        })
+    }
 
-        let mut ranges = Vec::with_capacity(self.sections.len());
+    /// Return `true` if `output` holds the headers and the data of each section at its file
+    /// range.
+    ///
+    /// Packed files can declare headers and sections that share file bytes. Such a layout is
+    /// correct only if the shared bytes agree. Otherwise one write replaces part of another.
+    fn output_holds_data(&self, output: &[u8], headers: &[u8]) -> bool {
+        let mut ranges = Vec::with_capacity(self.sections.len() + 1);
+        ranges.push(0..headers.len());
         for section in &self.sections {
             let start = section.header.pointer_to_raw_data as usize;
             let size = section.header.size_of_raw_data as usize;
-            if size == 0 {
-                if !section.data.is_empty() && section.preserved_raw_size() != Some(0) {
-                    return Ok(false);
-                }
-                continue;
+            if start != 0 && size != 0 {
+                ranges.push(start..start.saturating_add(size));
             }
-            if start < header_limit || section.data.len() > size {
-                return Ok(false);
-            }
-            let end = start
-                .checked_add(size)
-                .ok_or_else(|| Error::invalid_section("section file range overflow"))?;
-            ranges.push(start..end);
         }
-        ranges.sort_by_key(|range| range.start);
-        Ok(ranges.windows(2).all(|pair| pair[0].end <= pair[1].start))
+        ranges.sort_unstable_by_key(|range| range.start);
+        if ranges.windows(2).all(|pair| pair[0].end <= pair[1].start) {
+            return true;
+        }
+
+        // Some ranges overlap. Compare each component with the bytes in the output.
+        if output.get(..headers.len()) != Some(headers) {
+            return false;
+        }
+        self.sections.iter().all(|section| {
+            let start = section.header.pointer_to_raw_data as usize;
+            let size = section.header.size_of_raw_data as usize;
+            if start == 0 || size == 0 {
+                return true;
+            }
+            let Some(written) = output.get(start..start.saturating_add(size)) else {
+                return false;
+            };
+            let data_len = section.data.len().min(size);
+            let (data, padding) = written.split_at(data_len);
+            data == &section.data[..data_len] && padding.iter().all(|byte| *byte == 0)
+        })
     }
 
     /// Make a loader-style memory image of this normalized image at its current runtime base.
@@ -259,8 +286,16 @@ impl PeImage {
             .checked_add(section_table_size)
             .ok_or_else(|| Error::invalid_section("header size overflow"))?;
 
-        // Each range below ends at or before `header_end`, which is `output.len()`.
-        let mut output = try_zeroed_buffer(header_end, "PE headers")?;
+        // Keep the header tail inside `SizeOfHeaders`, so that it cannot overlap section data.
+        let tail = self.header_tail_after(header_end).and_then(|tail| {
+            let limit = self.optional_header.size_of_headers() as usize;
+            let end = tail.offset.checked_add(tail.bytes.len())?.min(limit);
+            (end > tail.offset).then(|| (tail.offset, &tail.bytes[..end - tail.offset]))
+        });
+        let output_len = tail.map_or(header_end, |(offset, bytes)| offset + bytes.len());
+
+        // Each range below ends at or before `output_len`, which is `output.len()`.
+        let mut output = try_zeroed_buffer(output_len, "PE headers")?;
         self.dos_header.write(&mut output[..DosHeader::SIZE])?;
         output[DosHeader::SIZE..stub_end].copy_from_slice(&self.dos_stub);
         output[pe_offset..coff_offset].copy_from_slice(&PE_SIGNATURE.to_le_bytes());
@@ -270,22 +305,45 @@ impl PeImage {
             .write(&mut output[optional_offset..sections_offset])?;
 
         let (section_table, _) =
-            output[sections_offset..].as_chunks_mut::<{ SectionHeader::SIZE }>();
+            output[sections_offset..header_end].as_chunks_mut::<{ SectionHeader::SIZE }>();
         for (section, slot) in self.sections.iter().zip(section_table) {
             section.header.write(slot)?;
+        }
+        if let Some((offset, bytes)) = tail {
+            output[offset..offset + bytes.len()].copy_from_slice(bytes);
         }
 
         Ok(output)
     }
 
-    /// Write the PE bytes, and do not update the layout.
+    /// Return the header tail if the header table ends at or before it.
+    ///
+    /// `table_end` is the end of the section table. If the header table grows into the tail,
+    /// the header table replaces the tail.
+    pub(super) fn header_tail_after(&self, table_end: usize) -> Option<&HeaderTail> {
+        let tail = &self.header_tail;
+        (!tail.bytes.is_empty() && tail.offset >= table_end).then_some(tail)
+    }
+
+    /// Return the end of the header data for a section table that ends at `table_end`.
+    ///
+    /// This is the end of the header tail, or `table_end` if no header tail follows the table.
+    pub(super) fn header_data_end(&self, table_end: usize) -> Option<usize> {
+        self.header_tail_after(table_end)
+            .map_or(Some(table_end), |tail| {
+                tail.offset.checked_add(tail.bytes.len())
+            })
+    }
+
+    /// Write the PE bytes with the serialized `headers`, and do not update the layout.
     ///
     /// Use this method after a call to `update_layout()` to prevent repeated work.
-    fn try_write_bytes(&self) -> Result<Vec<u8>> {
-        // Calculate the total file size.
+    fn try_write_bytes(&self, headers: &[u8]) -> Result<Vec<u8>> {
+        // Calculate the total file size. The loader ignores `PointerToRawData` if
+        // `SizeOfRawData` is zero.
         let mut file_size = self.optional_header.size_of_headers() as usize;
         for section in &self.sections {
-            if section.header.pointer_to_raw_data > 0 {
+            if section.header.pointer_to_raw_data > 0 && section.header.size_of_raw_data > 0 {
                 let end = (section.header.pointer_to_raw_data as usize)
                     .checked_add(section.header.size_of_raw_data as usize)
                     .ok_or_else(|| Error::invalid_section("section file range overflow"))?;
@@ -293,10 +351,9 @@ impl PeImage {
             }
         }
 
-        let headers = self.build_headers()?;
         file_size = file_size.max(headers.len());
         let mut output = try_zeroed_buffer(file_size, "raw PE image")?;
-        output[..headers.len()].copy_from_slice(&headers);
+        output[..headers.len()].copy_from_slice(headers);
 
         if usize::from(self.coff_header.number_of_sections) != self.sections.len() {
             return Err(Error::invalid_section(format!(

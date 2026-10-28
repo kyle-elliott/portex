@@ -283,6 +283,19 @@ pub fn try_calculate_size_of_image(sections: &[Section], config: &LayoutConfig) 
         .try_fold(0u32, |maximum, size| size.map(|size| maximum.max(size)))
 }
 
+/// Calculate `SizeOfImage` for sections that follow headers of `size_of_headers` bytes.
+///
+/// The image always maps the complete headers, also if no section follows them.
+pub(crate) fn try_calculate_size_of_image_with_headers(
+    sections: &[Section],
+    config: &LayoutConfig,
+    size_of_headers: u32,
+) -> Result<u32> {
+    let headers_end = checked_align_up(size_of_headers, config.section_alignment)
+        .ok_or_else(|| Error::invalid_section("SizeOfHeaders exceeds u32 after alignment"))?;
+    Ok(try_calculate_size_of_image(sections, config)?.max(headers_end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

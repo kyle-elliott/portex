@@ -49,7 +49,8 @@ impl PeImage {
     /// Read `len` bytes at an RVA into a new buffer.
     ///
     /// The range can be in the PE headers. It can also cross the boundary between contiguous
-    /// sections.
+    /// sections. As in the loader view, the bytes of a section after its data and before its
+    /// virtual end read as zero.
     #[must_use]
     pub fn read_rva(&self, rva: u32, len: usize) -> Option<Vec<u8>> {
         if len == 0 {
@@ -88,12 +89,17 @@ impl PeImage {
 
             let section = self.section_by_rva(current_rva)?;
             let section_offset = current_rva.checked_sub(section.header.virtual_address)? as usize;
-            let available = section.data.len().checked_sub(section_offset)?;
+            let available = mapped_extent(section).checked_sub(section_offset)?;
             let count = available.min(len - output.len());
             if count == 0 {
                 return None;
             }
-            output.extend_from_slice(&section.data[section_offset..section_offset + count]);
+            let initialized = section.data.len().saturating_sub(section_offset).min(count);
+            if initialized != 0 {
+                output
+                    .extend_from_slice(&section.data[section_offset..section_offset + initialized]);
+            }
+            output.resize(output.len() + count - initialized, 0);
             current_rva = current_rva.checked_add(u32::try_from(count).ok()?)?;
         }
 
@@ -138,7 +144,7 @@ impl PeImage {
             let Some(relative) = current.checked_sub(section.header.virtual_address) else {
                 return false;
             };
-            let Some(available) = section.data.len().checked_sub(relative as usize) else {
+            let Some(available) = mapped_extent(section).checked_sub(relative as usize) else {
                 return false;
             };
             let count = available.min(remaining);
@@ -503,8 +509,17 @@ impl PeImage {
     }
 
     /// Clear the data directory entry of the given type.
+    ///
+    /// If the data-directory array has no entry of this type, the function does nothing. It does
+    /// not grow the array or change `NumberOfRvaAndSizes`.
     pub fn clear_data_directory(&mut self, dir_type: crate::data_dir::DataDirectoryType) {
-        self.set_data_directory(dir_type, 0, 0);
+        if let Some(entry) = self
+            .optional_header
+            .data_directories_mut()
+            .get_mut(dir_type.as_index())
+        {
+            *entry = crate::data_dir::DataDirectory::default();
+        }
     }
 
     /// Append data to a section, and return the RVA of the data.
@@ -539,4 +554,16 @@ impl PeImage {
         self.try_update_layout()?;
         Ok(rva)
     }
+}
+
+/// Return the number of bytes at the start of a section that an RVA read can address.
+///
+/// The headers give the larger of `VirtualSize` and `SizeOfRawData`, as in
+/// [`Section::contains_rva`]. Section data that is longer after an edit stays readable.
+fn mapped_extent(section: &Section) -> usize {
+    (section
+        .header
+        .virtual_size
+        .max(section.header.size_of_raw_data) as usize)
+        .max(section.data.len())
 }
