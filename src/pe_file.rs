@@ -13,9 +13,6 @@ use std::fs::File;
 #[cfg(feature = "std")]
 use std::path::Path;
 
-/// The error message for a raw layout that cannot hold the headers and the section data.
-const UNHELD_LAYOUT: &str = "current raw layout cannot hold the edited section data";
-
 /// A raw PE file together with the bytes outside the mapped image.
 ///
 /// [`PeImage`] owns the normalized headers and sections. Thus it can hold raw-file input or
@@ -403,8 +400,7 @@ impl PeFile {
             bytes
         } else {
             pe.try_update_layout()?;
-            pe.try_build_current_layout()?
-                .ok_or_else(|| Error::invalid_section(UNHELD_LAYOUT))?
+            pe.try_build_updated_layout()?
         };
         let base_size = first_pass.len();
 
@@ -441,8 +437,11 @@ impl PeFile {
         }
 
         let mut output = if preserve_layout {
-            pe.try_build_current_layout()?
-                .ok_or_else(|| Error::invalid_section(UNHELD_LAYOUT))?
+            pe.try_build_current_layout()?.ok_or_else(|| {
+                Error::invalid_section(
+                    "current raw layout cannot hold the headers and the section data",
+                )
+            })?
         } else {
             pe.try_build()?
         };
@@ -538,18 +537,12 @@ fn raw_image_end(pe: &PeImage) -> Result<usize> {
 fn section_table_end(image: &PeImage) -> Result<usize> {
     let pe_offset = usize::try_from(image.dos_header.e_lfanew)
         .map_err(|_| Error::invalid_section("e_lfanew is negative"))?;
-    image
-        .sections
-        .len()
-        .checked_mul(crate::SectionHeader::SIZE)
-        .and_then(|table_size| {
-            table_size.checked_add(
-                4 + crate::CoffHeader::SIZE
-                    + usize::from(image.coff_header.size_of_optional_header),
-            )
-        })
-        .and_then(|size| pe_offset.checked_add(size))
-        .ok_or_else(|| Error::invalid_section("section-table offset overflow"))
+    crate::layout::headers_size_at(
+        pe_offset,
+        image.sections.len(),
+        usize::from(image.coff_header.size_of_optional_header),
+    )
+    .ok_or_else(|| Error::invalid_section("section-table offset overflow"))
 }
 
 impl RawLayoutFingerprint {

@@ -318,12 +318,17 @@ impl PeImage {
         let serialized_optional_size = actual_optional_size.max(declared_optional_size);
         let serialized_optional_size_u16 = u16::try_from(serialized_optional_size)
             .map_err(|_| Error::invalid_section("optional header exceeds u16"))?;
-        // Keep the header tail at its offset: data directories refer to it by RVA.
-        let headers_size =
+        let table_end =
             layout::headers_size_at(pe_offset, self.sections.len(), serialized_optional_size)
-                .and_then(|table_end| self.header_data_end(table_end))
-                .and_then(|size| u32::try_from(size).ok())
                 .ok_or_else(|| Error::invalid_section("header table exceeds u32"))?;
+        // Keep the header tail at its offset: data directories refer to it by RVA. A section
+        // table that grows into the tail replaces the tail.
+        let drops_tail =
+            !self.header_tail.bytes.is_empty() && self.header_tail_after(table_end).is_none();
+        let headers_size = self
+            .header_data_end(table_end)
+            .and_then(|size| u32::try_from(size).ok())
+            .ok_or_else(|| Error::invalid_section("header table exceeds u32"))?;
         let size_of_headers = layout::checked_align_up(headers_size, config.file_alignment)
             .ok_or_else(|| Error::invalid_section("SizeOfHeaders exceeds u32"))?;
 
@@ -341,6 +346,9 @@ impl PeImage {
             .map_err(|_| Error::invalid_data_directory("data-directory count exceeds u32"))?;
 
         self.sections = sections;
+        if drops_tail {
+            self.drop_header_tail();
+        }
         self.set_size_of_headers(size_of_headers);
         self.set_size_of_image(size_of_image);
         self.apply_optional_layout_fields(aggregates, directory_count);
@@ -349,6 +357,23 @@ impl PeImage {
         self.coff_header.number_of_sections = section_count;
         self.coff_header.size_of_optional_header = serialized_optional_size_u16;
         Ok(())
+    }
+
+    /// Remove the header tail after the section table grows into it.
+    ///
+    /// The section table replaces the start of the tail. If the `BoundImport` directory points
+    /// into the tail, clear the directory. The loader then resolves the imports without the
+    /// bound import table.
+    fn drop_header_tail(&mut self) {
+        use crate::data_dir::DataDirectoryType;
+
+        let tail = core::mem::take(&mut self.header_tail);
+        if self
+            .data_directory(DataDirectoryType::BoundImport)
+            .is_some_and(|directory| tail.contains_rva(directory.virtual_address))
+        {
+            self.clear_data_directory(DataDirectoryType::BoundImport);
+        }
     }
 
     fn apply_optional_layout_fields(&mut self, fields: OptionalLayoutFields, count: u32) {

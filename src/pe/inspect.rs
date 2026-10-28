@@ -1,4 +1,5 @@
 use super::{MAX_NUMBER_OF_SECTIONS, PeImage, SourceLayout};
+use crate::layout;
 use crate::optional::OptionalHeader;
 use crate::prelude::*;
 use crate::section::Section;
@@ -49,8 +50,15 @@ impl PeImage {
     /// Read `len` bytes at an RVA into a new buffer.
     ///
     /// The range can be in the PE headers. It can also cross the boundary between contiguous
-    /// sections. As in the loader view, the bytes of a section after its data and before its
-    /// virtual end read as zero.
+    /// sections. As in the loader view, these bytes read as zero:
+    ///
+    /// - The header bytes after the header data and before `SizeOfHeaders`.
+    /// - The bytes of a section after its complete raw data and before its virtual end.
+    ///
+    /// The result is `None` if the range is not in the image. It is also `None` if the read adds
+    /// more zero bytes than the image holds in its header data and section data. This limit
+    /// keeps the memory use of a read in proportion to the input, also if `SizeOfHeaders` or
+    /// `VirtualSize` is very large.
     #[must_use]
     pub fn read_rva(&self, rva: u32, len: usize) -> Option<Vec<u8>> {
         if len == 0 {
@@ -65,6 +73,13 @@ impl PeImage {
             return None;
         }
 
+        // Each output byte is a copy of a held byte or a zero byte. Thus a read that adds at most
+        // `held` zero bytes is at most `2 * held` bytes long.
+        let held = self.held_len();
+        if len > held.saturating_mul(2) {
+            return None;
+        }
+        let mut zero_budget = held;
         let mut output = Vec::new();
         output.try_reserve_exact(len).ok()?;
         let mut current_rva = rva;
@@ -79,6 +94,7 @@ impl PeImage {
                     return None;
                 }
                 let initialized = header_bytes.len().saturating_sub(start).min(count);
+                zero_budget = zero_budget.checked_sub(count - initialized)?;
                 if initialized != 0 {
                     output.extend_from_slice(&header_bytes[start..start + initialized]);
                 }
@@ -95,6 +111,7 @@ impl PeImage {
                 return None;
             }
             let initialized = section.data.len().saturating_sub(section_offset).min(count);
+            zero_budget = zero_budget.checked_sub(count - initialized)?;
             if initialized != 0 {
                 output
                     .extend_from_slice(&section.data[section_offset..section_offset + initialized]);
@@ -106,7 +123,33 @@ impl PeImage {
         Some(output)
     }
 
-    /// Check if an RVA range is available, without allocating or copying it.
+    /// Return the number of bytes that the image holds: the header data and the section data.
+    ///
+    /// The header data ends at the section table or at the header tail after it.
+    fn held_len(&self) -> usize {
+        let headers = usize::try_from(self.dos_header.e_lfanew)
+            .ok()
+            .and_then(|pe_offset| {
+                layout::headers_size_at(
+                    pe_offset,
+                    self.sections.len(),
+                    usize::from(self.coff_header.size_of_optional_header),
+                )
+            })
+            .and_then(|table_end| self.header_data_end(table_end))
+            .unwrap_or(0);
+        self.sections.iter().fold(headers, |total, section| {
+            total.saturating_add(section.data.len())
+        })
+    }
+
+    /// Check if an RVA range is in the headers or in the sections, without allocating or copying
+    /// it.
+    ///
+    /// The check uses the extents of [`Self::read_rva`]. Thus the zero bytes after the raw data
+    /// of a section are in the range, but [`Self::read_at_rva`] cannot borrow them.
+    /// [`Self::read_rva`] can also reject a range that this method accepts, if the read adds too
+    /// many zero bytes.
     #[must_use]
     pub fn contains_rva_range(&self, rva: u32, len: usize) -> bool {
         if len == 0 {
@@ -512,13 +555,22 @@ impl PeImage {
     ///
     /// If the data-directory array has no entry of this type, the function does nothing. It does
     /// not grow the array or change `NumberOfRvaAndSizes`.
+    ///
+    /// The bound import table can be in the header bytes after the section table. If you clear
+    /// the `BoundImport` entry, the function also removes the table from these bytes. Then the
+    /// build writes zeros in its place.
     pub fn clear_data_directory(&mut self, dir_type: crate::data_dir::DataDirectoryType) {
-        if let Some(entry) = self
+        let Some(entry) = self
             .optional_header
             .data_directories_mut()
             .get_mut(dir_type.as_index())
-        {
-            *entry = crate::data_dir::DataDirectory::default();
+        else {
+            return;
+        };
+        let old = core::mem::take(entry);
+        if dir_type == crate::data_dir::DataDirectoryType::BoundImport {
+            self.header_tail
+                .clear_rva_range(old.virtual_address, old.size);
         }
     }
 
@@ -558,12 +610,25 @@ impl PeImage {
 
 /// Return the number of bytes at the start of a section that an RVA read can address.
 ///
-/// The headers give the larger of `VirtualSize` and `SizeOfRawData`, as in
-/// [`Section::contains_rva`]. Section data that is longer after an edit stays readable.
+/// The loader fills a section with zeros after its raw data. The headers give the end of the
+/// section: the larger of `VirtualSize` and `SizeOfRawData`, as in [`Section::contains_rva`].
+/// An RVA read uses the same zeros, but only after complete raw data:
+///
+/// - If the data is shorter than `SizeOfRawData`, the parser could not read some raw bytes (see
+///   [`MissingSectionData::Empty`](super::MissingSectionData::Empty)). These bytes are not
+///   known to be zero, so the read stops at the end of the data.
+/// - The data of a section from a loader-mapped image covers the mapped range. Missing bytes
+///   there are also not known to be zero.
+///
+/// Section data that is longer after an edit stays readable.
 fn mapped_extent(section: &Section) -> usize {
+    let data_len = section.data.len();
+    if section.mapped_raw_size.is_some() || data_len < section.header.size_of_raw_data as usize {
+        return data_len;
+    }
     (section
         .header
         .virtual_size
         .max(section.header.size_of_raw_data) as usize)
-        .max(section.data.len())
+        .max(data_len)
 }

@@ -1,9 +1,9 @@
 use super::{HeaderTail, MissingSectionData, ParseOptions, PeHeaders, PeImage, SourceLayout};
-use crate::coff::CoffHeader;
 use crate::dos::DosHeader;
+use crate::layout;
 use crate::prelude::*;
 use crate::reader::{ReadAt, SliceReader};
-use crate::section::{Section, SectionHeader};
+use crate::section::Section;
 use crate::{Error, Result};
 
 #[cfg(feature = "std")]
@@ -248,30 +248,26 @@ impl PeImage {
         reader: &R,
         base_offset: u64,
         headers: &PeHeaders,
-        layout: SourceLayout,
+        source_layout: SourceLayout,
     ) -> HeaderTail {
-        // The NT headers are the PE signature, the COFF header, the optional header and the
-        // section table.
-        let nt_headers_size = (headers.section_headers.len() as u64)
-            .checked_mul(SectionHeader::SIZE as u64)
-            .and_then(|table_size| {
-                table_size.checked_add(
-                    4 + CoffHeader::SIZE as u64
-                        + u64::from(headers.coff_header.size_of_optional_header),
-                )
-            });
         let Some(table_end) = headers
             .pe_offset
             .checked_sub(base_offset)
-            .zip(nt_headers_size)
-            .and_then(|(pe_offset, size)| pe_offset.checked_add(size))
+            .and_then(|pe_offset| usize::try_from(pe_offset).ok())
+            .and_then(|pe_offset| {
+                layout::headers_size_at(
+                    pe_offset,
+                    headers.section_headers.len(),
+                    usize::from(headers.coff_header.size_of_optional_header),
+                )
+            })
         else {
             return HeaderTail::default();
         };
 
         let mut limit = u64::from(headers.optional_header.size_of_headers());
         for header in &headers.section_headers {
-            let start = match layout {
+            let start = match source_layout {
                 SourceLayout::File => (header.pointer_to_raw_data != 0
                     && header.size_of_raw_data != 0)
                     .then_some(header.pointer_to_raw_data),
@@ -286,26 +282,23 @@ impl PeImage {
             limit = limit.min(source_size.saturating_sub(base_offset));
         }
 
-        let len = limit
-            .checked_sub(table_end)
-            .filter(|len| *len != 0)
-            .and_then(|len| usize::try_from(len).ok());
-        let (Some(len), Ok(offset), Some(source_offset)) = (
-            len,
-            usize::try_from(table_end),
-            base_offset.checked_add(table_end),
+        let (Some(len), Some(source_offset)) = (
+            limit
+                .checked_sub(table_end as u64)
+                .filter(|len| *len != 0)
+                .and_then(|len| usize::try_from(len).ok()),
+            base_offset.checked_add(table_end as u64),
         ) else {
             return HeaderTail::default();
         };
-        let mut bytes =
-            Self::read_source_bytes(reader, source_offset, len, MissingSectionData::Empty)
-                .unwrap_or_default();
-        let used = bytes
-            .iter()
-            .rposition(|byte| *byte != 0)
-            .map_or(0, |last| last + 1);
-        bytes.truncate(used);
-        HeaderTail { offset, bytes }
+        let bytes = Self::read_source_bytes(reader, source_offset, len, MissingSectionData::Empty)
+            .unwrap_or_default();
+        let mut tail = HeaderTail {
+            offset: table_end,
+            bytes,
+        };
+        tail.trim_trailing_zeros();
+        tail
     }
 
     /// Read a source range and apply the selected [`MissingSectionData`] policy.

@@ -3,7 +3,7 @@
 use portex::headers::{CoffHeader, DataDirectoryType, MachineType, OptionalHeader, SectionHeader};
 use portex::image::{PeBuilder, PeFile, PeHeaders, PeImage};
 use portex::section::characteristics;
-use portex::{Subsystem, ValidationCode};
+use portex::{ParseOptions, Subsystem, ValidationCode};
 
 fn test_image() -> PeImage {
     PeBuilder::new()
@@ -45,6 +45,54 @@ fn put_size_of_headers(raw: &mut [u8], headers: &PeHeaders, size: u32) {
     raw[field..field + 4].copy_from_slice(&size.to_le_bytes());
 }
 
+/// Write the `SizeOfImage` field of a PE32+ optional header in raw bytes.
+fn put_size_of_image(raw: &mut [u8], headers: &PeHeaders, size: u32) {
+    let field = optional_header_offset(headers) + 56;
+    raw[field..field + 4].copy_from_slice(&size.to_le_bytes());
+}
+
+/// Build a file with a bound import table directly after the section table, as linkers do.
+fn bound_import_file() -> Vec<u8> {
+    let mut raw = test_image().try_build().unwrap();
+    let headers = PeHeaders::from_slice(&raw).unwrap();
+    let table_offset =
+        section_table_offset(&headers) + headers.section_headers.len() * SectionHeader::SIZE;
+    let mut table = Vec::new();
+    table.extend_from_slice(&0x4243_7794u32.to_le_bytes());
+    table.extend_from_slice(&16u16.to_le_bytes());
+    table.extend_from_slice(&0u16.to_le_bytes());
+    table.extend_from_slice(&[0; 8]);
+    table.extend_from_slice(b"KERNEL32.DLL\0");
+    assert!(table_offset + table.len() <= headers.optional_header.size_of_headers() as usize);
+    raw[table_offset..table_offset + table.len()].copy_from_slice(&table);
+    put_directory(
+        &mut raw,
+        &headers,
+        DataDirectoryType::BoundImport.as_index(),
+        u32::try_from(table_offset).unwrap(),
+        u32::try_from(table.len()).unwrap(),
+    );
+    raw
+}
+
+fn bound_import_names(image: &PeImage) -> Vec<String> {
+    image
+        .bound_imports()
+        .unwrap()
+        .unwrap()
+        .descriptors
+        .into_iter()
+        .map(|descriptor| descriptor.module_name)
+        .collect()
+}
+
+fn count_module_names(bytes: &[u8]) -> usize {
+    bytes
+        .windows(12)
+        .filter(|window| *window == b"KERNEL32.DLL")
+        .count()
+}
+
 #[test]
 fn validation_reports_an_unverifiable_checksum_without_a_panic() {
     let mut image = test_image();
@@ -79,44 +127,135 @@ fn pe_file_keeps_a_short_data_directory_array() {
 
 #[test]
 fn bound_imports_in_the_header_slack_survive_parse_and_build() {
+    let raw = bound_import_file();
+    let image = PeImage::parse(&raw).unwrap();
+    assert_eq!(bound_import_names(&image), ["KERNEL32.DLL"]);
+    let rebuilt = PeImage::parse(&image.try_build().unwrap()).unwrap();
+    assert_eq!(bound_import_names(&rebuilt), ["KERNEL32.DLL"]);
+    let mapped = PeImage::parse_mapped(&image.to_mapped_image().unwrap()).unwrap();
+    assert_eq!(bound_import_names(&mapped), ["KERNEL32.DLL"]);
+    assert_eq!(PeFile::parse(&raw).unwrap().try_build().unwrap(), raw);
+}
+
+#[test]
+fn clearing_bound_imports_removes_the_table_from_the_headers() {
+    let mut image = PeImage::parse(&bound_import_file()).unwrap();
+    image.clear_data_directory(DataDirectoryType::BoundImport);
+
+    let output = image.try_build().unwrap();
+    assert_eq!(count_module_names(&output), 0);
+    assert!(
+        PeImage::parse(&output)
+            .unwrap()
+            .bound_imports()
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn moving_bound_imports_removes_the_old_table_from_the_headers() {
+    let mut image = PeImage::parse(&bound_import_file()).unwrap();
+    let directory = image.bound_imports().unwrap().unwrap();
+    // The table cannot be written in place in the headers, so it moves to `.rdata`.
+    image
+        .update_bound_imports(&directory, Some(".rdata"))
+        .unwrap();
+
+    let output = image.try_build().unwrap();
+    assert_eq!(count_module_names(&output), 1);
+    assert_eq!(
+        bound_import_names(&PeImage::parse(&output).unwrap()),
+        ["KERNEL32.DLL"]
+    );
+}
+
+#[test]
+fn a_section_table_that_replaces_bound_imports_clears_the_directory() {
+    let mut image = PeImage::parse(&bound_import_file()).unwrap();
+    // The new section header needs the bytes of the bound import table.
+    image
+        .try_add_section_with_data(
+            ".new",
+            vec![1; 0x10],
+            characteristics::INITIALIZED_DATA | characteristics::READ,
+        )
+        .unwrap();
+
+    let rebuilt = PeImage::parse(&image.try_build().unwrap()).unwrap();
+    assert!(rebuilt.bound_imports().unwrap().is_none());
+}
+
+#[test]
+fn rva_reads_do_not_zero_fill_section_bytes_that_the_parser_could_not_read() {
+    let image = test_image();
+    let rdata = image.sections[1].header.virtual_address;
+    let rdata_offset = image.sections[1].header.pointer_to_raw_data as usize;
+    // A remote reader cannot read the pages of `.rdata`.
+    let mapped = image.to_mapped_image().unwrap();
+    let mapped = PeImage::parse_with_options(
+        &mapped[..rdata as usize],
+        ParseOptions::mapped().allow_missing_section_data(),
+    )
+    .unwrap();
+    // A truncated file ends before the raw data of `.rdata`.
+    let raw = image.try_build().unwrap();
+    let file = PeImage::parse_with_options(
+        &raw[..rdata_offset],
+        ParseOptions::file().allow_missing_section_data(),
+    )
+    .unwrap();
+
+    for parsed in [mapped, file] {
+        assert_eq!(parsed.sections[1].data, []);
+        assert!(!parsed.contains_rva_range(rdata, 16));
+        assert_eq!(parsed.read_rva(rdata, 16), None);
+    }
+}
+
+#[test]
+fn rva_reads_limit_the_zero_fill_of_a_large_section() {
     let mut raw = test_image().try_build().unwrap();
     let headers = PeHeaders::from_slice(&raw).unwrap();
-    // Linkers put the bound import table directly after the section table.
-    let table_offset =
-        section_table_offset(&headers) + headers.section_headers.len() * SectionHeader::SIZE;
-    let mut table = Vec::new();
-    table.extend_from_slice(&0x4243_7794u32.to_le_bytes());
-    table.extend_from_slice(&16u16.to_le_bytes());
-    table.extend_from_slice(&0u16.to_le_bytes());
-    table.extend_from_slice(&[0; 8]);
-    table.extend_from_slice(b"KERNEL32.DLL\0");
-    assert!(table_offset + table.len() <= headers.optional_header.size_of_headers() as usize);
-    raw[table_offset..table_offset + table.len()].copy_from_slice(&table);
+    let rdata = &headers.section_headers[1];
+    // A small file declares 16 MiB of zero-filled virtual space.
+    let virtual_size = 0x0100_0000u32;
+    let rdata_header = section_table_offset(&headers) + SectionHeader::SIZE;
+    raw[rdata_header + 8..rdata_header + 12].copy_from_slice(&virtual_size.to_le_bytes());
+    put_size_of_image(&mut raw, &headers, rdata.virtual_address + virtual_size);
+    let tail = rdata.virtual_address + 0x1000;
+    let size = virtual_size - 0x2000;
     put_directory(
         &mut raw,
         &headers,
-        DataDirectoryType::BoundImport.as_index(),
-        u32::try_from(table_offset).unwrap(),
-        u32::try_from(table.len()).unwrap(),
+        DataDirectoryType::BaseReloc.as_index(),
+        tail,
+        size,
     );
 
-    let names = |image: &PeImage| -> Vec<String> {
-        image
-            .bound_imports()
-            .unwrap()
-            .unwrap()
-            .descriptors
-            .into_iter()
-            .map(|descriptor| descriptor.module_name)
-            .collect()
-    };
     let image = PeImage::parse(&raw).unwrap();
-    assert_eq!(names(&image), ["KERNEL32.DLL"]);
-    let rebuilt = PeImage::parse(&image.try_build().unwrap()).unwrap();
-    assert_eq!(names(&rebuilt), ["KERNEL32.DLL"]);
-    let mapped = PeImage::parse_mapped(&image.to_mapped_image().unwrap()).unwrap();
-    assert_eq!(names(&mapped), ["KERNEL32.DLL"]);
-    assert_eq!(PeFile::parse(&raw).unwrap().try_build().unwrap(), raw);
+    assert_eq!(image.read_rva(tail, 0x100), Some(vec![0; 0x100]));
+    assert_eq!(image.read_rva(tail, size as usize), None);
+    assert!(image.relocations().is_err());
+}
+
+#[test]
+fn rva_reads_limit_the_zero_fill_of_large_headers() {
+    let mut raw = PeBuilder::new()
+        .machine(MachineType::Amd64)
+        .try_build()
+        .unwrap()
+        .try_build()
+        .unwrap();
+    let headers = PeHeaders::from_slice(&raw).unwrap();
+    // A small file declares 16 MiB of headers.
+    let size = 0x0100_0000u32;
+    put_size_of_headers(&mut raw, &headers, size);
+    put_size_of_image(&mut raw, &headers, size);
+
+    let image = PeImage::parse(&raw).unwrap();
+    assert_eq!(image.read_rva(0x300, 0x40), Some(vec![0; 0x40]));
+    assert_eq!(image.read_rva(0x1000, size as usize - 0x1000), None);
 }
 
 #[test]

@@ -41,16 +41,24 @@ impl PeImage {
     pub fn try_build(&self) -> Result<Vec<u8>> {
         let mut pe = self.clone();
         pe.try_update_layout()?;
-        pe.synchronize_file_offsets()?;
-        let headers = pe.build_headers()?;
-        pe.try_write_bytes(&headers)
+        pe.try_build_updated_layout()
+    }
+
+    /// Serialize the image after a call to [`Self::try_update_layout`].
+    ///
+    /// The method rebases the debug file offsets in `self`, and returns each error.
+    pub(crate) fn try_build_updated_layout(&mut self) -> Result<Vec<u8>> {
+        self.synchronize_file_offsets()?;
+        let headers = self.build_headers()?;
+        self.try_write_bytes(&headers)
     }
 
     /// Serialize the image with the current raw file offsets, and do not recompute the layout.
     ///
     /// [`crate::PeFile`] uses this method to keep intentional file gaps when the parsed layout
-    /// does not change otherwise. Returns `None` if the current raw layout cannot hold the
-    /// headers and the section data.
+    /// does not change otherwise. The result is `None` if the current raw layout cannot hold the
+    /// headers and the section data, or if the headers do not fit the current layout. Then the
+    /// caller can make a new layout.
     pub(crate) fn try_build_current_layout(&self) -> Result<Option<Vec<u8>>> {
         if !self.current_layout_can_hold() {
             return Ok(None);
@@ -289,7 +297,7 @@ impl PeImage {
         // Keep the header tail inside `SizeOfHeaders`, so that it cannot overlap section data.
         let tail = self.header_tail_after(header_end).and_then(|tail| {
             let limit = self.optional_header.size_of_headers() as usize;
-            let end = tail.offset.checked_add(tail.bytes.len())?.min(limit);
+            let end = tail.end()?.min(limit);
             (end > tail.offset).then(|| (tail.offset, &tail.bytes[..end - tail.offset]))
         });
         let output_len = tail.map_or(header_end, |(offset, bytes)| offset + bytes.len());
@@ -330,9 +338,7 @@ impl PeImage {
     /// This is the end of the header tail, or `table_end` if no header tail follows the table.
     pub(super) fn header_data_end(&self, table_end: usize) -> Option<usize> {
         self.header_tail_after(table_end)
-            .map_or(Some(table_end), |tail| {
-                tail.offset.checked_add(tail.bytes.len())
-            })
+            .map_or(Some(table_end), HeaderTail::end)
     }
 
     /// Write the PE bytes with the serialized `headers`, and do not update the layout.

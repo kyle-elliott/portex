@@ -182,6 +182,50 @@ pub(crate) struct HeaderTail {
     pub(crate) bytes: Vec<u8>,
 }
 
+impl HeaderTail {
+    /// Return the offset after the last byte, or `None` on overflow.
+    pub(crate) fn end(&self) -> Option<usize> {
+        self.offset.checked_add(self.bytes.len())
+    }
+
+    /// Return `true` if the RVA `rva` is in the tail bytes.
+    pub(crate) fn contains_rva(&self, rva: u32) -> bool {
+        usize::try_from(rva)
+            .ok()
+            .and_then(|rva| rva.checked_sub(self.offset))
+            .is_some_and(|index| index < self.bytes.len())
+    }
+
+    /// Set the tail bytes in an RVA range to zero.
+    ///
+    /// The part of the range outside the tail has no effect.
+    pub(crate) fn clear_rva_range(&mut self, rva: u32, size: u32) {
+        let Some(start) = usize::try_from(rva)
+            .ok()
+            .and_then(|rva| rva.checked_sub(self.offset))
+            .filter(|start| *start < self.bytes.len())
+        else {
+            return;
+        };
+        let end = usize::try_from(size)
+            .ok()
+            .and_then(|size| start.checked_add(size))
+            .map_or(self.bytes.len(), |end| end.min(self.bytes.len()));
+        self.bytes[start..end].fill(0);
+        self.trim_trailing_zeros();
+    }
+
+    /// Remove the zero bytes at the end. The build writes zeros there without the tail.
+    pub(crate) fn trim_trailing_zeros(&mut self) {
+        let used = self
+            .bytes
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |last| last + 1);
+        self.bytes.truncate(used);
+    }
+}
+
 /// The PE headers without the section data.
 ///
 /// Use this type for a remote process, or when you need only the header data.
