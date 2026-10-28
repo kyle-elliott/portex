@@ -39,17 +39,17 @@ Portex does not parse CLR metadata streams or tables. To parse them, give
 
 ```toml
 [dependencies]
-portex = "0.3"
+portex = "0.4"
 ```
 
 For `no_std + alloc`:
 
 ```toml
 [dependencies]
-portex = { version = "0.3", default-features = false }
+portex = { version = "0.4", default-features = false }
 ```
 
-Portex 0.3 requires Rust 1.88 or newer.
+Portex 0.4 requires Rust 1.88 or newer.
 
 The default `std` feature adds filesystem helpers and `FileReader`. It also enables the `std`
 feature of `nostdio`. Then the `nostdio` traits and `nostdio::IoError` are the `std::io` items,
